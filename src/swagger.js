@@ -1,0 +1,988 @@
+import swaggerUi from 'swagger-ui-express';
+
+export const openApiSpec = {
+  openapi: '3.0.3',
+  info: {
+    title: 'Solax Admin API',
+    version: '1.0.0',
+    description:
+      'Super admin, admin, oddiy user, Telegram WebApp login va role boshqaruvi uchun backend API.',
+  },
+  servers: [
+    {
+      url: '/',
+      description: 'Current server',
+    },
+  ],
+  tags: [
+    { name: 'Health', description: 'Servis holati va umumiy snapshot' },
+    { name: 'Auth', description: 'Local login va Telegram WebApp auth' },
+    { name: 'Admin', description: 'Admin va super admin statistikasi' },
+    { name: 'Devices', description: "Qurilmalar ro'yxati va CRUD amallari" },
+    { name: 'Users', description: 'Role va foydalanuvchi boshqaruvi' },
+  ],
+  components: {
+    securitySchemes: {
+      bearerAuth: {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'JWT',
+      },
+    },
+    schemas: {
+      User: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer', example: 1 },
+          username: { type: 'string', nullable: true, example: 'superadmin' },
+          displayName: { type: 'string', nullable: true, example: 'Super Admin' },
+          telegramId: { type: 'string', nullable: true, example: '123456789' },
+          telegramUsername: { type: 'string', nullable: true, example: 'solax_admin' },
+          telegramPhotoUrl: {
+            type: 'string',
+            nullable: true,
+            example: 'https://t.me/i/userpic/320/example.svg',
+          },
+          authProvider: { type: 'string', example: 'local' },
+          role: { type: 'string', example: 'super_admin' },
+          status: { type: 'string', example: 'active' },
+          createdBy: { type: 'integer', nullable: true, example: 1 },
+          createdAt: { type: 'string', format: 'date-time' },
+          updatedAt: { type: 'string', format: 'date-time' },
+          lastLoginAt: { type: 'string', format: 'date-time', nullable: true },
+          lastTelegramAuthAt: { type: 'string', format: 'date-time', nullable: true },
+        },
+      },
+      AuthResponse: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean', example: true },
+          token: { type: 'string', example: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...' },
+          user: {
+            $ref: '#/components/schemas/User',
+          },
+        },
+      },
+      ErrorResponse: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean', example: false },
+          message: { type: 'string', example: "Bu amal uchun yetarli huquq yo'q" },
+        },
+      },
+      HealthResponse: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean', example: true },
+          service: { type: 'string', example: 'solax-backend' },
+          telegramEnabled: { type: 'boolean', example: true },
+          generatedAt: { type: 'string', format: 'date-time' },
+          snapshot: {
+            type: 'object',
+            properties: {
+              users: { type: 'object' },
+              devices: { type: 'object' },
+              alerts: { type: 'object' },
+            },
+          },
+        },
+      },
+      Pagination: {
+        type: 'object',
+        properties: {
+          page: { type: 'integer', example: 1 },
+          pageSize: { type: 'integer', example: 25 },
+          total: { type: 'integer', example: 131 },
+          totalPages: { type: 'integer', example: 6 },
+        },
+      },
+      Device: {
+        type: 'object',
+        properties: {
+          registrationNo: { type: 'string', example: 'REG-1001' },
+          deviceSn: { type: 'string', nullable: true, example: 'SN123456789' },
+          userName: { type: 'string', nullable: true, example: 'Abdulaziz R.' },
+          plantName: { type: 'string', nullable: true, example: 'Tashkent Plant' },
+          deviceModel: { type: 'string', nullable: true, example: 'X3-HYBRID-10K' },
+          telegramIds: {
+            type: 'array',
+            items: { type: 'string' },
+            example: ['7530833627', '998901234567'],
+          },
+          onlineStatus: { type: 'string', enum: ['Online', 'Offline', 'Unknown'], example: 'Online' },
+          lastSeenAt: { type: 'string', format: 'date-time', nullable: true },
+          lastCheckedAt: { type: 'string', format: 'date-time', nullable: true },
+          addedAt: { type: 'string', format: 'date-time' },
+          deviceNo: { type: 'integer', nullable: true, example: 42 },
+          deviceName: { type: 'string', nullable: true, example: 'Main Inverter' },
+          source: { type: 'string', nullable: true, example: 'manual' },
+          trackingEnabled: { type: 'boolean', example: true },
+        },
+      },
+      DeviceCreateRequest: {
+        type: 'object',
+        required: ['registrationNo'],
+        properties: {
+          registrationNo: { type: 'string', example: 'REG-1001' },
+          deviceSn: { type: 'string', example: 'SN123456789' },
+          userName: { type: 'string', example: 'Abdulaziz R.' },
+          plantName: { type: 'string', example: 'Tashkent Plant' },
+          deviceModel: { type: 'string', example: 'X3-HYBRID-10K' },
+          telegramIds: {
+            type: 'array',
+            items: { type: 'string' },
+            example: ['7530833627'],
+          },
+          onlineStatus: { type: 'string', enum: ['Online', 'Offline', 'Unknown'], example: 'Unknown' },
+          lastSeenAt: { type: 'string', format: 'date-time', nullable: true },
+          lastCheckedAt: { type: 'string', format: 'date-time', nullable: true },
+          addedAt: { type: 'string', format: 'date-time', nullable: true },
+          deviceNo: { type: 'integer', nullable: true, example: 42 },
+          deviceName: { type: 'string', example: 'Main Inverter' },
+          source: { type: 'string', example: 'manual' },
+          trackingEnabled: { type: 'boolean', example: true },
+        },
+      },
+      DeviceUpdateRequest: {
+        type: 'object',
+        properties: {
+          deviceSn: { type: 'string', nullable: true, example: 'SN123456789' },
+          userName: { type: 'string', nullable: true, example: 'Abdulaziz R.' },
+          plantName: { type: 'string', nullable: true, example: 'Tashkent Plant' },
+          deviceModel: { type: 'string', nullable: true, example: 'X3-HYBRID-10K' },
+          telegramIds: {
+            type: 'array',
+            items: { type: 'string' },
+            example: ['7530833627'],
+          },
+          onlineStatus: { type: 'string', enum: ['Online', 'Offline', 'Unknown'], example: 'Offline' },
+          lastSeenAt: { type: 'string', format: 'date-time', nullable: true },
+          lastCheckedAt: { type: 'string', format: 'date-time', nullable: true },
+          deviceNo: { type: 'integer', nullable: true, example: 42 },
+          deviceName: { type: 'string', nullable: true, example: 'Main Inverter' },
+          source: { type: 'string', nullable: true, example: 'manual' },
+          trackingEnabled: { type: 'boolean', example: false },
+        },
+      },
+      DeviceResponse: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean', example: true },
+          device: { $ref: '#/components/schemas/Device' },
+        },
+      },
+      DeviceListResponse: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean', example: true },
+          pagination: { $ref: '#/components/schemas/Pagination' },
+          devices: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/Device' },
+          },
+        },
+      },
+      DeviceByTelegramResponse: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean', example: true },
+          telegramId: { type: 'string', example: '7530833627' },
+          total: { type: 'integer', example: 2 },
+          devices: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/Device' },
+          },
+        },
+      },
+      DeviceTotals: {
+        type: 'object',
+        properties: {
+          totalDevices: { type: 'integer', example: 131 },
+          onlineDevices: { type: 'integer', example: 54 },
+          offlineDevices: { type: 'integer', example: 67 },
+          unknownDevices: { type: 'integer', example: 10 },
+        },
+      },
+      DeviceStatusResponse: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean', example: true },
+          status: { $ref: '#/components/schemas/DeviceTotals' },
+        },
+      },
+      DeviceDeleteResponse: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean', example: true },
+          registrationNo: { type: 'string', example: 'REG-1001' },
+          deleted: { type: 'boolean', example: true },
+        },
+      },
+      UserStatus: {
+        type: 'object',
+        properties: {
+          totalUsers: { type: 'integer', example: 120 },
+          activeUsers: { type: 'integer', example: 118 },
+          blockedUsers: { type: 'integer', example: 2 },
+          telegramUsers: { type: 'integer', example: 50 },
+          localUsers: { type: 'integer', example: 40 },
+          hybridUsers: { type: 'integer', example: 30 },
+        },
+      },
+      UserStatusResponse: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean', example: true },
+          status: { $ref: '#/components/schemas/UserStatus' },
+        },
+      },
+      AdminStatus: {
+        type: 'object',
+        properties: {
+          totalAdmins: { type: 'integer', example: 3 },
+          activeAdmins: { type: 'integer', example: 3 },
+          blockedAdmins: { type: 'integer', example: 0 },
+          superAdmins: { type: 'integer', example: 1 },
+          admins: { type: 'integer', example: 2 },
+        },
+      },
+      AdminStatusResponse: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean', example: true },
+          status: { $ref: '#/components/schemas/AdminStatus' },
+        },
+      },
+    },
+  },
+  paths: {
+    '/api/health': {
+      get: {
+        tags: ['Health'],
+        summary: "Servis holatini ko'rish",
+        responses: {
+          200: {
+            description: "Sog'lom javob",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/HealthResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/auth/login': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Username va parol bilan login',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['username', 'password'],
+                properties: {
+                  username: { type: 'string', example: 'superadmin' },
+                  password: { type: 'string', example: 'ChangeMe123!' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: 'Login muvaffaqiyatli',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/AuthResponse' },
+              },
+            },
+          },
+          401: {
+            description: 'Login xato',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/auth/telegram': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Telegram WebApp initData orqali login',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['initData'],
+                properties: {
+                  initData: {
+                    type: 'string',
+                    example: 'query_id=AAHdF6IQAAAAAN0XohDhrOrc&user=%7B%22id%22%3A123%7D&auth_date=1710000000&hash=...',
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: 'Telegram auth muvaffaqiyatli',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/AuthResponse' },
+              },
+            },
+          },
+          401: {
+            description: 'initData xato yoki eskirgan',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/auth/me': {
+      get: {
+        tags: ['Auth'],
+        summary: 'Joriy foydalanuvchini olish',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          200: {
+            description: "Foydalanuvchi ma'lumoti",
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    ok: { type: 'boolean', example: true },
+                    user: { $ref: '#/components/schemas/User' },
+                  },
+                },
+              },
+            },
+          },
+          401: {
+            description: "Token noto'g'ri",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/devices': {
+      get: {
+        tags: ['Devices'],
+        summary: "Device ro'yxatini olish",
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            in: 'query',
+            name: 'search',
+            schema: { type: 'string' },
+            description: "registrationNo, SN, userName, plantName, deviceName va telegramIds bo'yicha qidiruv",
+          },
+          {
+            in: 'query',
+            name: 'status',
+            schema: { type: 'string', enum: ['Online', 'Offline', 'Unknown'] },
+          },
+          {
+            in: 'query',
+            name: 'source',
+            schema: { type: 'string' },
+          },
+          {
+            in: 'query',
+            name: 'trackingEnabled',
+            schema: { oneOf: [{ type: 'boolean' }, { type: 'string', enum: ['0', '1', 'true', 'false'] }] },
+          },
+          {
+            in: 'query',
+            name: 'page',
+            schema: { type: 'integer', minimum: 1, default: 1 },
+          },
+          {
+            in: 'query',
+            name: 'pageSize',
+            schema: { type: 'integer', minimum: 1, maximum: 100, default: 25 },
+          },
+        ],
+        responses: {
+          200: {
+            description: "Device ro'yxati",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/DeviceListResponse' },
+              },
+            },
+          },
+          401: {
+            description: "Token noto'g'ri",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          403: {
+            description: 'Faqat admin va super_admin uchun',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+      post: {
+        tags: ['Devices'],
+        summary: 'Yangi device yaratish',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/DeviceCreateRequest' },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: 'Device yaratildi',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/DeviceResponse' },
+              },
+            },
+          },
+          400: {
+            description: "So'rov noto'g'ri",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          401: {
+            description: "Token noto'g'ri",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          403: {
+            description: 'Faqat admin va super_admin uchun',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          409: {
+            description: 'registrationNo allaqachon mavjud',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/devices/status': {
+      get: {
+        tags: ['Devices'],
+        summary: "Device status bo'yicha umumiy statistika",
+        security: [{ bearerAuth: [] }],
+        responses: {
+          200: {
+            description: 'Jami, online, offline va unknown sonlari',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/DeviceStatusResponse' },
+              },
+            },
+          },
+          401: {
+            description: "Token noto'g'ri",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          403: {
+            description: 'Faqat admin va super_admin uchun',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/devices/telegram/{telegramId}': {
+      get: {
+        tags: ['Devices'],
+        summary: 'Telegram ID ga biriktirilgan qurilmalarni olish',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            in: 'path',
+            name: 'telegramId',
+            required: true,
+            schema: { type: 'string', example: '7530833627' },
+            description: 'Qurilmaga biriktirilgan Telegram hisob ID si',
+          },
+        ],
+        responses: {
+          200: {
+            description: 'Berilgan Telegram ID ga bog\'langan qurilmalar ro\'yxati',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/DeviceByTelegramResponse' },
+              },
+            },
+          },
+          400: {
+            description: 'telegramId noto\'g\'ri yoki bo\'sh',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          401: {
+            description: "Token noto'g'ri",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          403: {
+            description: "Oddiy user faqat o'z telegramId bo'yicha ko'ra oladi, adminlar istalgan IDni ko'ra oladi",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/devices/telegam/{telegramId}': {
+      get: {
+        tags: ['Devices'],
+        summary: 'Telegram ID ga biriktirilgan qurilmalarni olish (alias)',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            in: 'path',
+            name: 'telegramId',
+            required: true,
+            schema: { type: 'string', example: '7530833627' },
+            description: 'Qurilmaga biriktirilgan Telegram hisob ID si',
+          },
+        ],
+        responses: {
+          200: {
+            description: 'Berilgan Telegram ID ga bog\'langan qurilmalar ro\'yxati',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/DeviceByTelegramResponse' },
+              },
+            },
+          },
+          400: {
+            description: 'telegramId noto\'g\'ri yoki bo\'sh',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          401: {
+            description: "Token noto'g'ri",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          403: {
+            description: "Oddiy user faqat o'z telegramId bo'yicha ko'ra oladi, adminlar istalgan IDni ko'ra oladi",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/devices/{registrationNo}': {
+      get: {
+        tags: ['Devices'],
+        summary: 'Bitta deviceni olish',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            in: 'path',
+            name: 'registrationNo',
+            required: true,
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          200: {
+            description: "Device ma'lumoti",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/DeviceResponse' },
+              },
+            },
+          },
+          401: {
+            description: "Token noto'g'ri",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          403: {
+            description: 'Faqat admin va super_admin uchun',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          404: {
+            description: 'Device topilmadi',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+      patch: {
+        tags: ['Devices'],
+        summary: "Device ma'lumotini yangilash",
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            in: 'path',
+            name: 'registrationNo',
+            required: true,
+            schema: { type: 'string' },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/DeviceUpdateRequest' },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: 'Device yangilandi',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/DeviceResponse' },
+              },
+            },
+          },
+          400: {
+            description: "So'rov noto'g'ri",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          401: {
+            description: "Token noto'g'ri",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          403: {
+            description: 'Faqat admin va super_admin uchun',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          404: {
+            description: 'Device topilmadi',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+      delete: {
+        tags: ['Devices'],
+        summary: "Device va unga bog'liq statistikani o'chirish",
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            in: 'path',
+            name: 'registrationNo',
+            required: true,
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          200: {
+            description: "Device o'chirildi",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/DeviceDeleteResponse' },
+              },
+            },
+          },
+          401: {
+            description: "Token noto'g'ri",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          403: {
+            description: 'Faqat admin va super_admin uchun',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          404: {
+            description: 'Device topilmadi',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/admin/status': {
+      get: {
+        tags: ['Admin'],
+        summary: 'Adminlar bo`yicha umumiy statistika',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          200: {
+            description: 'Admin va super adminlar soni va holati',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/AdminStatusResponse' },
+              },
+            },
+          },
+          401: {
+            description: "Token noto'g'ri",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          403: {
+            description: 'Faqat admin va super_admin uchun',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/users/status': {
+      get: {
+        tags: ['Users'],
+        summary: 'Oddiy userlar bo`yicha umumiy statistika',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          200: {
+            description: 'Userlar soni, bloklanganlar va providerlar kesimi',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/UserStatusResponse' },
+              },
+            },
+          },
+          401: {
+            description: "Token noto'g'ri",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          403: {
+            description: 'Faqat admin va super_admin uchun',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/users': {
+      get: {
+        tags: ['Users'],
+        summary: "Foydalanuvchilar ro'yxati",
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            in: 'query',
+            name: 'role',
+            schema: { type: 'string', enum: ['super_admin', 'admin', 'user'] },
+          },
+          {
+            in: 'query',
+            name: 'search',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          200: {
+            description: "Userlar ro'yxati",
+          },
+        },
+      },
+      post: {
+        tags: ['Users'],
+        summary: 'Oddiy user yaratish',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['username', 'password'],
+                properties: {
+                  username: { type: 'string', example: 'operator_01' },
+                  password: { type: 'string', example: 'secret123' },
+                  displayName: { type: 'string', example: 'Operator 01' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: 'Oddiy user yaratildi',
+          },
+        },
+      },
+    },
+    '/api/users/admins': {
+      post: {
+        tags: ['Users'],
+        summary: 'Yangi admin yaratish',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['username', 'password'],
+                properties: {
+                  username: { type: 'string', example: 'newadmin' },
+                  password: { type: 'string', example: 'secret123' },
+                  displayName: { type: 'string', example: 'New Admin' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: 'Admin yaratildi',
+          },
+        },
+      },
+    },
+    '/api/users/{id}/role': {
+      patch: {
+        tags: ['Users'],
+        summary: 'User rolini yangilash',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            in: 'path',
+            name: 'id',
+            required: true,
+            schema: { type: 'integer' },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['role'],
+                properties: {
+                  role: {
+                    type: 'string',
+                    enum: ['super_admin', 'admin', 'user'],
+                    example: 'admin',
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: 'Role yangilandi',
+          },
+        },
+      },
+    },
+  },
+};
+
+export const swaggerUiHandler = swaggerUi.serve;
+export const swaggerUiSetup = swaggerUi.setup(openApiSpec, {
+  explorer: true,
+  customSiteTitle: 'Solax Swagger',
+});

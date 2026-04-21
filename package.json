@@ -1,0 +1,20 @@
+{
+  "name": "solax-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch index.js",
+    "start": "node index.js",
+    "backend": "node --env-file=.env src/server.js",
+    "bot": "node --env-file=.env src/bot.js",
+    "dev:backend": "node --env-file=.env --watch src/server.js",
+    "dev:bot": "node --env-file=.env --watch src/bot.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "swagger-ui-express": "^5.0.1"
+  }
+}
