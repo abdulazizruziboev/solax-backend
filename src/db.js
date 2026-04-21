@@ -1,4 +1,4 @@
-import { DatabaseSync } from 'node:sqlite';
+import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -366,7 +366,7 @@ export function getDb() {
 
   const databaseFilePath = path.resolve(getBackendRoot(), config.databasePath);
   mkdirSync(path.dirname(databaseFilePath), { recursive: true });
-  dbInstance = new DatabaseSync(databaseFilePath);
+  dbInstance = new Database(databaseFilePath);
   dbInstance.exec(`
     PRAGMA foreign_keys = ON;
     PRAGMA journal_mode = WAL;

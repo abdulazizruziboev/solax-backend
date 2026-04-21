@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "dev": "node --watch index.js",
     "start": "node index.js",
@@ -12,6 +15,7 @@
     "dev:bot": "node --env-file=.env --watch src/bot.js"
   },
   "dependencies": {
+    "better-sqlite3": "^12.4.1",
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
