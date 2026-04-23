@@ -111,7 +111,9 @@ function parseRealtimePayload(payload) {
   }
 
   if (payload.success === false) {
-    throw new Error(payload.exception || `SolaX API xatosi: code=${payload.code ?? 'unknown'}`);
+    throw new Error(
+      payload.result || payload.exception || `SolaX API xatosi: code=${payload.code ?? 'unknown'}`,
+    );
   }
 
   const result = payload.result ?? payload.data ?? payload;
@@ -173,12 +175,12 @@ function isQuotaError(error) {
   return /maximum call threshold|quota|rate limit|too many/i.test(error?.message || '');
 }
 
-async function fetchRealtimeInfo(deviceSn) {
+async function fetchRealtimeInfo(registrationNo) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.solaxRealtimeRequestTimeoutMs);
 
   try {
-    const response = await fetch(buildRealtimeUrl(deviceSn), {
+    const response = await fetch(buildRealtimeUrl(registrationNo), {
       method: 'GET',
       signal: controller.signal,
     });
@@ -247,7 +249,7 @@ async function executeSync(trigger) {
         const target = targets[index];
 
         try {
-          const realtime = await fetchRealtimeInfo(target.deviceSn);
+          const realtime = await fetchRealtimeInfo(target.registrationNo);
           saveDeviceRealtimeStats({
             registrationNo: target.registrationNo,
             deviceSn: target.deviceSn,

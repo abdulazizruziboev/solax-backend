@@ -51,7 +51,18 @@ export const openApiSpec = {
           updatedAt: { type: 'string', format: 'date-time' },
           lastLoginAt: { type: 'string', format: 'date-time', nullable: true },
           lastTelegramAuthAt: { type: 'string', format: 'date-time', nullable: true },
+          permissions: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/UserPermission' },
+            example: ['users.block', 'devices.crud', 'admins.crud'],
+          },
         },
+      },
+      UserPermission: {
+        type: 'string',
+        enum: ['users.block', 'devices.crud', 'admins.crud'],
+        description:
+          'users.block: userlarni bloklash/blokdan chiqarish; devices.crud: device yaratish, yangilash, ochirish va sync; admins.crud: admin yaratish, rol/status/delete boshqaruvi',
       },
       AuthResponse: {
         type: 'object',
@@ -208,6 +219,23 @@ export const openApiSpec = {
         properties: {
           ok: { type: 'boolean', example: true },
           status: { $ref: '#/components/schemas/DeviceTotals' },
+        },
+      },
+      DeviceVisibility: {
+        type: 'object',
+        properties: {
+          devicesVisibleToAll: {
+            type: 'boolean',
+            example: true,
+            description: "true bo'lsa oddiy userlar ham barcha device'larni ko'ra oladi",
+          },
+        },
+      },
+      DeviceVisibilityResponse: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean', example: true },
+          visibility: { $ref: '#/components/schemas/DeviceVisibility' },
         },
       },
       DeviceDeleteResponse: {
@@ -450,7 +478,7 @@ export const openApiSpec = {
       },
       post: {
         tags: ['Devices'],
-        summary: 'Yangi device yaratish',
+        summary: 'Yangi device yaratish (devices.crud)',
         security: [{ bearerAuth: [] }],
         requestBody: {
           required: true,
@@ -515,6 +543,93 @@ export const openApiSpec = {
             content: {
               'application/json': {
                 schema: { $ref: '#/components/schemas/DeviceStatusResponse' },
+              },
+            },
+          },
+          401: {
+            description: "Token noto'g'ri",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          403: {
+            description: 'Faqat admin va super_admin uchun',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/devices/visibility': {
+      get: {
+        tags: ['Devices'],
+        summary: "Device'larni hamma userga ko'rsatish sozlamasi",
+        security: [{ bearerAuth: [] }],
+        responses: {
+          200: {
+            description: 'Joriy visibility setting',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/DeviceVisibilityResponse' },
+              },
+            },
+          },
+          401: {
+            description: "Token noto'g'ri",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          403: {
+            description: 'Faqat admin va super_admin uchun',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+      patch: {
+        tags: ['Devices'],
+        summary: "Device'larni hamma userga ko'rsatishni yoqish/o'chirish (devices.crud)",
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  devicesVisibleToAll: { type: 'boolean', example: true },
+                  visibleToAll: { type: 'boolean', example: true },
+                  enabled: { type: 'boolean', example: true },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: 'Visibility setting yangilandi',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/DeviceVisibilityResponse' },
+              },
+            },
+          },
+          400: {
+            description: "So'rov noto'g'ri",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
               },
             },
           },
@@ -687,7 +802,7 @@ export const openApiSpec = {
       },
       patch: {
         tags: ['Devices'],
-        summary: "Device ma'lumotini yangilash",
+        summary: "Device ma'lumotini yangilash (devices.crud)",
         security: [{ bearerAuth: [] }],
         parameters: [
           {
@@ -750,7 +865,7 @@ export const openApiSpec = {
       },
       delete: {
         tags: ['Devices'],
-        summary: "Device va unga bog'liq statistikani o'chirish",
+        summary: "Device va unga bog'liq statistikani o'chirish (devices.crud)",
         security: [{ bearerAuth: [] }],
         parameters: [
           {
@@ -799,7 +914,7 @@ export const openApiSpec = {
     '/api/admin/status': {
       get: {
         tags: ['Admin'],
-        summary: 'Adminlar bo`yicha umumiy statistika',
+        summary: 'Adminlar bo`yicha umumiy statistika (admins.crud)',
         security: [{ bearerAuth: [] }],
         responses: {
           200: {
@@ -819,7 +934,7 @@ export const openApiSpec = {
             },
           },
           403: {
-            description: 'Faqat admin va super_admin uchun',
+            description: 'admins.crud permission kerak',
             content: {
               'application/json': {
                 schema: { $ref: '#/components/schemas/ErrorResponse' },
@@ -832,7 +947,7 @@ export const openApiSpec = {
     '/api/users/status': {
       get: {
         tags: ['Users'],
-        summary: 'Oddiy userlar bo`yicha umumiy statistika',
+        summary: 'Oddiy userlar bo`yicha umumiy statistika (users.block yoki admins.crud)',
         security: [{ bearerAuth: [] }],
         responses: {
           200: {
@@ -852,7 +967,7 @@ export const openApiSpec = {
             },
           },
           403: {
-            description: 'Faqat admin va super_admin uchun',
+            description: 'users.block yoki admins.crud permission kerak',
             content: {
               'application/json': {
                 schema: { $ref: '#/components/schemas/ErrorResponse' },
@@ -866,6 +981,8 @@ export const openApiSpec = {
       get: {
         tags: ['Users'],
         summary: "Foydalanuvchilar ro'yxati",
+        description:
+          'role=user uchun users.block yoki admins.crud kerak. role=admin uchun admins.crud kerak. role=super_admin faqat super_admin uchun.',
         security: [{ bearerAuth: [] }],
         parameters: [
           {
@@ -887,7 +1004,7 @@ export const openApiSpec = {
       },
       post: {
         tags: ['Users'],
-        summary: 'Oddiy user yaratish',
+        summary: 'Oddiy user yaratish (admins.crud)',
         security: [{ bearerAuth: [] }],
         requestBody: {
           required: true,
@@ -915,7 +1032,7 @@ export const openApiSpec = {
     '/api/users/admins': {
       post: {
         tags: ['Users'],
-        summary: 'Yangi admin yaratish',
+        summary: 'Yangi admin yaratish (admins.crud)',
         security: [{ bearerAuth: [] }],
         requestBody: {
           required: true,
@@ -943,7 +1060,7 @@ export const openApiSpec = {
     '/api/users/{id}/role': {
       patch: {
         tags: ['Users'],
-        summary: 'User rolini yangilash',
+        summary: 'User rolini yangilash (admins.crud)',
         security: [{ bearerAuth: [] }],
         parameters: [
           {
@@ -978,11 +1095,194 @@ export const openApiSpec = {
         },
       },
     },
+    '/api/users/{id}/status': {
+      patch: {
+        tags: ['Users'],
+        summary: 'User statusini yangilash (users.block yoki admins.crud)',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            in: 'path',
+            name: 'id',
+            required: true,
+            schema: { type: 'integer' },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['status'],
+                properties: {
+                  status: {
+                    type: 'string',
+                    enum: ['active', 'disabled'],
+                    example: 'disabled',
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: 'Status yangilandi',
+          },
+        },
+      },
+    },
+    '/api/users/{id}/permissions': {
+      patch: {
+        tags: ['Users'],
+        summary: 'Admin permissionlarini yangilash (faqat super_admin)',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            in: 'path',
+            name: 'id',
+            required: true,
+            schema: { type: 'integer' },
+            description: 'Permission beriladigan admin ID si',
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['permissions'],
+                properties: {
+                  permissions: {
+                    type: 'array',
+                    items: { $ref: '#/components/schemas/UserPermission' },
+                    example: ['users.block', 'devices.crud'],
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: 'Permissionlar yangilandi',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    ok: { type: 'boolean', example: true },
+                    user: { $ref: '#/components/schemas/User' },
+                  },
+                },
+              },
+            },
+          },
+          400: {
+            description: "Permission noto'g'ri yoki target user admin emas",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          403: {
+            description: 'Faqat super_admin uchun',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          404: {
+            description: 'Foydalanuvchi topilmadi',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/users/{id}': {
+      delete: {
+        tags: ['Users'],
+        summary: "Userni o'chirish (admins.crud)",
+        description:
+          "admins.crud permissioni bor admin oddiy user/adminlarni o'chira oladi. Super admin va o'zingizni o'chirib bo'lmaydi.",
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            in: 'path',
+            name: 'id',
+            required: true,
+            schema: { type: 'integer' },
+            description: "O'chiriladigan user ID si",
+          },
+        ],
+        responses: {
+          200: {
+            description: "User o'chirildi",
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    ok: { type: 'boolean', example: true },
+                    deletedUserId: { type: 'integer', example: 12 },
+                    unlinkedDevices: { type: 'integer', example: 2 },
+                    deletedUser: { $ref: '#/components/schemas/User' },
+                  },
+                },
+              },
+            },
+          },
+          400: {
+            description: "So'rov noto'g'ri yoki himoyalangan user",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          401: {
+            description: "Token noto'g'ri",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          403: {
+            description: "Bu amal uchun yetarli huquq yo'q",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          404: {
+            description: 'Foydalanuvchi topilmadi',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
   },
 };
 
-export const swaggerUiHandler = swaggerUi.serve;
-export const swaggerUiSetup = swaggerUi.setup(openApiSpec, {
+export const swaggerUiHandler = swaggerUi.serveFiles(null, {
+  swaggerUrl: '/openapi.json',
+});
+export const swaggerUiSetup = swaggerUi.setup(null, {
   explorer: true,
+  swaggerUrl: '/openapi.json',
   customSiteTitle: 'Solax Swagger',
 });

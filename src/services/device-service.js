@@ -1,6 +1,37 @@
 import { getDb } from '../db.js';
 import { DEVICE_STATUSES } from '../constants.js';
 import { AppError } from '../middleware/errors.js';
+import { getSetting, setSetting } from './settings-service.js';
+
+const DEVICES_VISIBLE_TO_ALL_SETTING_KEY = 'devices.visibleToAll';
+const TASHKENT_OFFSET_MS = 5 * 60 * 60 * 1000;
+const ENERGY_CHART_POINTS = Object.freeze([
+  ...Array.from({ length: 20 }, (_item, index) => {
+    const hour = index + 4;
+    return {
+      time: `${String(hour).padStart(2, '0')}:00`,
+      minute: hour * 60,
+    };
+  }),
+  { time: '23:59', minute: 23 * 60 + 59 },
+]);
+const TELEGRAM_ID_PAYLOAD_KEYS = Object.freeze([
+  'telegramIds',
+  'telegramId',
+  'telegram_id',
+  'tgId',
+  'tg_id',
+  'userTelegramId',
+  'userTelegramIds',
+]);
+const USER_ID_PAYLOAD_KEYS = Object.freeze([
+  'userId',
+  'userIds',
+  'appUserId',
+  'appUserIds',
+  'assignedUserId',
+  'assignedUserIds',
+]);
 
 function hasOwn(object, key) {
   return Object.prototype.hasOwnProperty.call(object, key);
@@ -30,13 +61,52 @@ function firstDefined(...values) {
   return undefined;
 }
 
-function toSqlDateTime(value) {
-  const date = new Date(value);
+function parseDateInput(value) {
+  if (value instanceof Date) {
+    return value;
+  }
+
+  if (typeof value === 'number') {
+    return new Date(value);
+  }
+
+  const text = String(value || '').trim();
+  const localDateTimeMatch = text.match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/,
+  );
+
+  if (localDateTimeMatch) {
+    const [, year, month, day, hour = '00', minute = '00', second = '00'] = localDateTimeMatch;
+    return new Date(
+      Date.UTC(
+        Number(year),
+        Number(month) - 1,
+        Number(day),
+        Number(hour) - 5,
+        Number(minute),
+        Number(second),
+      ),
+    );
+  }
+
+  return new Date(value);
+}
+
+function toTashkentSqlDateTime(value) {
+  const date = parseDateInput(value);
   if (!Number.isFinite(date.getTime())) {
     throw new AppError(400, `Sana noto'g'ri: ${value}`);
   }
 
-  return date.toISOString().slice(0, 19).replace('T', ' ');
+  return new Date(date.getTime() + TASHKENT_OFFSET_MS).toISOString().slice(0, 19).replace('T', ' ');
+}
+
+function toTashkentDate(value = Date.now()) {
+  return toTashkentSqlDateTime(value).slice(0, 10);
+}
+
+function toSqlDateTime(value) {
+  return toTashkentSqlDateTime(value);
 }
 
 function normaliseText(value, { label, required = false, maxLength = 255 } = {}) {
@@ -119,6 +189,22 @@ function normaliseTrackingEnabled(value, fallback = 1) {
   throw new AppError(400, "trackingEnabled true/false yoki 1/0 bo'lishi kerak");
 }
 
+function normaliseBooleanFlag(value, label) {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  if (value === 1 || value === '1' || value === 'true' || value === 'on') {
+    return true;
+  }
+
+  if (value === 0 || value === '0' || value === 'false' || value === 'off') {
+    return false;
+  }
+
+  throw new AppError(400, `${label} true/false yoki 1/0 bo'lishi kerak`);
+}
+
 function normaliseTelegramId(value) {
   const text = String(value ?? '').trim();
 
@@ -133,6 +219,77 @@ function normaliseTelegramId(value) {
   return text;
 }
 
+function resolveTelegramIdFromUserId(userId) {
+  const cleanUserId = normaliseOptionalInteger(userId, 'userId');
+
+  if (!cleanUserId) {
+    return null;
+  }
+
+  const user = getDb()
+    .prepare(
+      `
+        SELECT id, telegramId, status
+        FROM app_users
+        WHERE id = ?
+        LIMIT 1
+      `,
+    )
+    .get(cleanUserId);
+
+  if (!user) {
+    throw new AppError(404, 'Foydalanuvchi topilmadi');
+  }
+
+  if (user.status !== 'active') {
+    throw new AppError(400, 'Bloklangan foydalanuvchini devicega biriktirib bo\'lmaydi');
+  }
+
+  if (!user.telegramId) {
+    throw new AppError(400, 'Foydalanuvchida Telegram ID yo\'q');
+  }
+
+  return normaliseTelegramId(user.telegramId);
+}
+
+function normaliseTelegramIdsFromUserIds(value) {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const source = Array.isArray(value) ? value : [value];
+  const deduped = [];
+
+  for (const item of source) {
+    const normalised = resolveTelegramIdFromUserId(item);
+    if (normalised && !deduped.includes(normalised)) {
+      deduped.push(normalised);
+    }
+  }
+
+  return deduped;
+}
+
+function normaliseTelegramIdCandidate(value) {
+  if (!value || typeof value !== 'object' || value instanceof Date) {
+    return normaliseTelegramId(value);
+  }
+
+  if (hasAnyOwn(value, TELEGRAM_ID_PAYLOAD_KEYS)) {
+    return normaliseTelegramId(getFirstOwnValue(value, TELEGRAM_ID_PAYLOAD_KEYS));
+  }
+
+  if (hasAnyOwn(value, USER_ID_PAYLOAD_KEYS)) {
+    return resolveTelegramIdFromUserId(getFirstOwnValue(value, USER_ID_PAYLOAD_KEYS));
+  }
+
+  if (hasOwn(value, 'id')) {
+    return resolveTelegramIdFromUserId(value.id);
+  }
+
+  throw new AppError(400, 'Telegram ID yoki userId yuborilishi kerak');
+}
+
 function normaliseTelegramIds(value) {
   if (value === undefined) {
     return undefined;
@@ -142,13 +299,29 @@ function normaliseTelegramIds(value) {
   const deduped = [];
 
   for (const item of source) {
-    const normalised = normaliseTelegramId(item);
+    const normalised = normaliseTelegramIdCandidate(item);
     if (normalised && !deduped.includes(normalised)) {
       deduped.push(normalised);
     }
   }
 
   return deduped;
+}
+
+function normaliseTelegramIdsFromPayload(payload, fallback = undefined) {
+  if (!payload || typeof payload !== 'object') {
+    return fallback;
+  }
+
+  if (hasAnyOwn(payload, TELEGRAM_ID_PAYLOAD_KEYS)) {
+    return normaliseTelegramIds(getFirstOwnValue(payload, TELEGRAM_ID_PAYLOAD_KEYS)) ?? [];
+  }
+
+  if (hasAnyOwn(payload, USER_ID_PAYLOAD_KEYS)) {
+    return normaliseTelegramIdsFromUserIds(getFirstOwnValue(payload, USER_ID_PAYLOAD_KEYS)) ?? [];
+  }
+
+  return fallback;
 }
 
 function serialiseTelegramIds(value) {
@@ -168,7 +341,7 @@ function parseTelegramIds(value) {
 }
 
 function toMinuteBucket(value) {
-  const date = new Date(value);
+  const date = parseDateInput(value);
   if (!Number.isFinite(date.getTime())) {
     throw new AppError(400, `Sana noto'g'ri: ${value}`);
   }
@@ -184,6 +357,373 @@ function toNumberOrNull(value) {
 
   const parsed = Number.parseFloat(String(value).replace(',', '.'));
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function roundChartValue(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return 0;
+  }
+
+  return Number(Math.max(0, number).toFixed(2));
+}
+
+function normaliseChartDate(value = null) {
+  if (value === undefined || value === null || value === '') {
+    return toTashkentDate();
+  }
+
+  const text = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    return text;
+  }
+
+  const date = parseDateInput(text);
+  if (!Number.isFinite(date.getTime())) {
+    throw new AppError(400, "date YYYY-MM-DD formatida bo'lishi kerak");
+  }
+
+  return toTashkentDate(date);
+}
+
+function minuteOfDay(value) {
+  const match = String(value || '').match(/\b(\d{2}):(\d{2})/);
+  if (!match) {
+    return null;
+  }
+
+  const hours = Number.parseInt(match[1], 10);
+  const minutes = Number.parseInt(match[2], 10);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+    return null;
+  }
+
+  return hours * 60 + minutes;
+}
+
+function normalisePowerValue(value) {
+  const number = toNumberOrNull(value);
+  if (number === null) {
+    return null;
+  }
+
+  // SolaX may return acPower in W on some accounts and kW on others.
+  const kilowatts = Math.abs(number) > 1000 ? number / 1000 : number;
+  return roundChartValue(kilowatts);
+}
+
+function getNearestPowerValue(rows, minute) {
+  let nearestRow = null;
+  let nearestDistance = Number.MAX_SAFE_INTEGER;
+
+  for (const row of rows) {
+    const rowMinute = minuteOfDay(row.snapshotMinute);
+    if (rowMinute === null) {
+      continue;
+    }
+
+    const distance = Math.abs(rowMinute - minute);
+    if (distance < nearestDistance) {
+      nearestRow = row;
+      nearestDistance = distance;
+    }
+  }
+
+  return normalisePowerValue(nearestRow?.acPower) ?? 0;
+}
+
+function buildActualEnergyChartData(rows) {
+  const cleanRows = rows.filter((row) => normalisePowerValue(row.acPower) !== null);
+  if (cleanRows.length < 3) {
+    return null;
+  }
+
+  return ENERGY_CHART_POINTS.map((point) => ({
+    time: point.time,
+    value: getNearestPowerValue(cleanRows, point.minute),
+  }));
+}
+
+function buildEstimatedEnergyChartData(totalEnergy) {
+  return ENERGY_CHART_POINTS.map((point) => ({
+    time: point.time,
+    value: point.time === '23:59' ? roundChartValue(totalEnergy) : 0,
+  }));
+}
+
+function groupYieldRowsByDevice(rows) {
+  const groupedRows = new Map();
+
+  for (const row of rows) {
+    const key = String(row.registrationNo || '').trim();
+    if (!key) {
+      continue;
+    }
+
+    const value = toNumberOrNull(row.yieldToday);
+    const minute = minuteOfDay(row.snapshotMinute);
+    if (value === null || minute === null) {
+      continue;
+    }
+
+    if (!groupedRows.has(key)) {
+      groupedRows.set(key, []);
+    }
+
+    groupedRows.get(key).push({
+      minute,
+      value,
+    });
+  }
+
+  for (const deviceRows of groupedRows.values()) {
+    deviceRows.sort((left, right) => left.minute - right.minute);
+  }
+
+  return groupedRows;
+}
+
+function getCumulativeYieldAt(groupedRows, minute) {
+  let total = 0;
+
+  for (const deviceRows of groupedRows.values()) {
+    let latestValue = 0;
+
+    for (const row of deviceRows) {
+      if (row.minute > minute) {
+        break;
+      }
+
+      latestValue = row.value;
+    }
+
+    total += latestValue;
+  }
+
+  return roundChartValue(total);
+}
+
+function getCurrentTashkentMinute() {
+  const time = toTashkentSqlDateTime(Date.now()).slice(11, 16);
+  return minuteOfDay(time) ?? 0;
+}
+
+function buildLatestTotalEnergyChartData(totalEnergy) {
+  const currentMinute = getCurrentTashkentMinute();
+  let totalAssigned = false;
+
+  return ENERGY_CHART_POINTS.map((point) => {
+    const shouldAssignTotal = !totalAssigned && point.minute >= currentMinute;
+    if (shouldAssignTotal) {
+      totalAssigned = true;
+    }
+
+    return {
+      time: point.time,
+      value: shouldAssignTotal || (!totalAssigned && point.time === '23:59') ? roundChartValue(totalEnergy) : 0,
+    };
+  });
+}
+
+function buildHourlyYieldChartData(rows, totalEnergy) {
+  const groupedRows = groupYieldRowsByDevice(rows);
+  if (groupedRows.size === 0) {
+    return buildLatestTotalEnergyChartData(totalEnergy);
+  }
+
+  let previousCumulative = getCumulativeYieldAt(groupedRows, 0);
+
+  return ENERGY_CHART_POINTS.map((point) => {
+    const cumulative = getCumulativeYieldAt(groupedRows, point.minute);
+    const value = roundChartValue(Math.max(0, cumulative - previousCumulative));
+    previousCumulative = cumulative;
+
+    return {
+      time: point.time,
+      value,
+    };
+  });
+}
+
+function getDailyEnergyTotal(db, date, registrationNo = null) {
+  if (registrationNo) {
+    const dailyRow = db
+      .prepare(
+        `
+          SELECT COALESCE(yieldToday, 0) AS total
+          FROM daily_stats
+          WHERE registrationNo = ?
+            AND date = ?
+          LIMIT 1
+        `,
+      )
+      .get(registrationNo, date);
+
+    if (dailyRow && Number(dailyRow.total) > 0) {
+      return roundChartValue(dailyRow.total);
+    }
+
+    const historyRow = db
+      .prepare(
+        `
+          SELECT COALESCE(MAX(yieldToday), 0) AS total
+          FROM device_status_history
+          WHERE registrationNo = ?
+            AND DATE(snapshotMinute) = ?
+        `,
+      )
+      .get(registrationNo, date);
+
+    return roundChartValue(historyRow?.total ?? 0);
+  }
+
+  const dailyRow = db
+    .prepare(
+      `
+        SELECT COALESCE(SUM(COALESCE(yieldToday, 0)), 0) AS total
+        FROM daily_stats
+        WHERE date = ?
+      `,
+    )
+    .get(date);
+
+  if (dailyRow && Number(dailyRow.total) > 0) {
+    return roundChartValue(dailyRow.total);
+  }
+
+  const historyRow = db
+    .prepare(
+      `
+        SELECT COALESCE(SUM(total), 0) AS total
+        FROM (
+          SELECT registrationNo, MAX(yieldToday) AS total
+          FROM device_status_history
+          WHERE DATE(snapshotMinute) = ?
+          GROUP BY registrationNo
+        )
+      `,
+    )
+    .get(date);
+
+  return roundChartValue(historyRow?.total ?? 0);
+}
+
+function getPowerHistoryRows(db, date, registrationNo = null) {
+  if (registrationNo) {
+    return db
+      .prepare(
+        `
+          SELECT snapshotMinute, acPower
+          FROM device_status_history
+          WHERE registrationNo = ?
+            AND DATE(snapshotMinute) = ?
+            AND acPower IS NOT NULL
+          ORDER BY snapshotMinute ASC
+        `,
+      )
+      .all(registrationNo, date);
+  }
+
+  return db
+    .prepare(
+      `
+        SELECT snapshotMinute, SUM(acPower) AS acPower
+        FROM device_status_history
+        WHERE DATE(snapshotMinute) = ?
+          AND acPower IS NOT NULL
+        GROUP BY snapshotMinute
+        ORDER BY snapshotMinute ASC
+      `,
+    )
+    .all(date);
+}
+
+function getYieldHistoryRows(db, date, registrationNo = null) {
+  if (registrationNo) {
+    return db
+      .prepare(
+        `
+          SELECT registrationNo, snapshotMinute, yieldToday
+          FROM device_status_history
+          WHERE registrationNo = ?
+            AND DATE(snapshotMinute) = ?
+            AND yieldToday IS NOT NULL
+          ORDER BY registrationNo ASC, snapshotMinute ASC
+        `,
+      )
+      .all(registrationNo, date);
+  }
+
+  return db
+    .prepare(
+      `
+        SELECT registrationNo, snapshotMinute, yieldToday
+        FROM device_status_history
+        WHERE DATE(snapshotMinute) = ?
+          AND yieldToday IS NOT NULL
+        ORDER BY registrationNo ASC, snapshotMinute ASC
+      `,
+    )
+    .all(date);
+}
+
+function getEnergyChartDeviceCount(db, registrationNo = null) {
+  if (registrationNo) {
+    return 1;
+  }
+
+  const row = db.prepare('SELECT COUNT(*) AS count FROM devices').get();
+  return row?.count ?? 0;
+}
+
+function getEnergyChartDataDeviceCount(db, date, registrationNo = null) {
+  if (registrationNo) {
+    const row = db
+      .prepare(
+        `
+          SELECT
+            (
+              EXISTS(
+                SELECT 1
+                FROM daily_stats
+                WHERE registrationNo = ?
+                  AND date = ?
+              )
+              OR EXISTS(
+                SELECT 1
+                FROM device_status_history
+                WHERE registrationNo = ?
+                  AND DATE(snapshotMinute) = ?
+                  AND (yieldToday IS NOT NULL OR acPower IS NOT NULL)
+              )
+            ) AS hasData
+        `,
+      )
+      .get(registrationNo, date, registrationNo, date);
+
+    return row?.hasData ? 1 : 0;
+  }
+
+  const row = db
+    .prepare(
+      `
+        SELECT COUNT(DISTINCT registrationNo) AS count
+        FROM (
+          SELECT registrationNo
+          FROM daily_stats
+          WHERE date = ?
+            AND yieldToday IS NOT NULL
+          UNION
+          SELECT registrationNo
+          FROM device_status_history
+          WHERE DATE(snapshotMinute) = ?
+            AND (yieldToday IS NOT NULL OR acPower IS NOT NULL)
+        )
+      `,
+    )
+    .get(date, date);
+
+  return row?.count ?? 0;
 }
 
 function resolveSyncedTextField(rawDevice, keys, existingValue, options) {
@@ -291,11 +831,35 @@ function serializeDevice(device) {
     deviceName: device.deviceName,
     source: device.source,
     trackingEnabled: Boolean(device.trackingEnabled),
+    yieldToday: hasOwn(device, 'yieldToday') ? roundChartValue(device.yieldToday) : undefined,
+    yieldTotal: hasOwn(device, 'yieldTotal') ? roundChartValue(device.yieldTotal) : undefined,
+    acPower: hasOwn(device, 'acPower') ? roundChartValue(device.acPower) : undefined,
+    realtimeUpdatedAt: hasOwn(device, 'realtimeUpdatedAt') ? device.realtimeUpdatedAt : undefined,
+    statsDate: hasOwn(device, 'statsDate') ? device.statsDate : undefined,
+    hasTodayStats: hasOwn(device, 'hasTodayStats') ? Boolean(device.hasTodayStats) : undefined,
   };
 }
 
 function getDeviceRow(registrationNo) {
-  return getDb().prepare('SELECT * FROM devices WHERE registrationNo = ?').get(registrationNo);
+  return getDb()
+    .prepare(
+      `
+        SELECT
+          d.*,
+          COALESCE(ds.yieldToday, 0) AS yieldToday,
+          ds.yieldTotal,
+          ds.acPower,
+          ds.updatedAt AS realtimeUpdatedAt,
+          ds.date AS statsDate,
+          CASE WHEN ds.registrationNo IS NULL THEN 0 ELSE 1 END AS hasTodayStats
+        FROM devices d
+        LEFT JOIN daily_stats ds
+          ON ds.registrationNo = d.registrationNo
+          AND ds.date = ?
+        WHERE d.registrationNo = ?
+      `,
+    )
+    .get(toTashkentDate(), registrationNo);
 }
 
 function getNextDeviceNo() {
@@ -321,6 +885,22 @@ export function getDeviceTotals() {
   };
 }
 
+export function areDevicesVisibleToAll() {
+  return getSetting(DEVICES_VISIBLE_TO_ALL_SETTING_KEY, 'false') === 'true';
+}
+
+export function getDeviceVisibilitySettings() {
+  return {
+    devicesVisibleToAll: areDevicesVisibleToAll(),
+  };
+}
+
+export function setDevicesVisibleToAll(value, { updatedBy = null } = {}) {
+  const enabled = normaliseBooleanFlag(value, 'devicesVisibleToAll');
+  setSetting(DEVICES_VISIBLE_TO_ALL_SETTING_KEY, enabled ? 'true' : 'false', { updatedBy });
+  return getDeviceVisibilitySettings();
+}
+
 export function listDevices({ search, status, source, trackingEnabled, page = 1, pageSize = 25 }) {
   const db = getDb();
   const filters = [];
@@ -330,13 +910,13 @@ export function listDevices({ search, status, source, trackingEnabled, page = 1,
     const wildcard = `%${String(search).trim()}%`;
     filters.push(`
       (
-        registrationNo LIKE ?
-        OR COALESCE(deviceSn, '') LIKE ?
-        OR COALESCE(userName, '') LIKE ?
-        OR COALESCE(plantName, '') LIKE ?
-        OR COALESCE(deviceModel, '') LIKE ?
-        OR COALESCE(deviceName, '') LIKE ?
-        OR COALESCE(telegramIds, '') LIKE ?
+        d.registrationNo LIKE ?
+        OR COALESCE(d.deviceSn, '') LIKE ?
+        OR COALESCE(d.userName, '') LIKE ?
+        OR COALESCE(d.plantName, '') LIKE ?
+        OR COALESCE(d.deviceModel, '') LIKE ?
+        OR COALESCE(d.deviceName, '') LIKE ?
+        OR COALESCE(d.telegramIds, '') LIKE ?
       )
     `);
     params.push(wildcard, wildcard, wildcard, wildcard, wildcard, wildcard, wildcard);
@@ -344,47 +924,58 @@ export function listDevices({ search, status, source, trackingEnabled, page = 1,
 
   if (status) {
     params.push(normaliseStatus(status));
-    filters.push('onlineStatus = ?');
+    filters.push('d.onlineStatus = ?');
   }
 
   if (source) {
     params.push(String(source).trim());
-    filters.push('source = ?');
+    filters.push('d.source = ?');
   }
 
   if (trackingEnabled !== undefined) {
     params.push(normaliseTrackingEnabled(trackingEnabled));
-    filters.push('trackingEnabled = ?');
+    filters.push('d.trackingEnabled = ?');
   }
 
   const cleanPage = Math.max(1, Number.parseInt(page, 10) || 1);
   const cleanPageSize = Math.min(100, Math.max(1, Number.parseInt(pageSize, 10) || 25));
   const whereClause = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '';
 
-  const total = db.prepare(`SELECT COUNT(*) AS count FROM devices ${whereClause}`).get(...params).count;
+  const total = db.prepare(`SELECT COUNT(*) AS count FROM devices d ${whereClause}`).get(...params).count;
+  const statsDate = toTashkentDate();
   const rows = db.prepare(`
     SELECT
-      registrationNo,
-      deviceSn,
-      userName,
-      plantName,
-      deviceModel,
-      telegramIds,
-      onlineStatus,
-      lastSeenAt,
-      lastCheckedAt,
-      addedAt,
-      deviceNo,
-      deviceName,
-      source,
-      trackingEnabled
-    FROM devices
+      d.registrationNo,
+      d.deviceSn,
+      d.userName,
+      d.plantName,
+      d.deviceModel,
+      d.telegramIds,
+      d.onlineStatus,
+      d.lastSeenAt,
+      d.lastCheckedAt,
+      d.addedAt,
+      d.deviceNo,
+      d.deviceName,
+      d.source,
+      d.trackingEnabled,
+      COALESCE(ds.yieldToday, 0) AS yieldToday,
+      ds.yieldTotal,
+      ds.acPower,
+      ds.updatedAt AS realtimeUpdatedAt,
+      ds.date AS statsDate,
+      CASE WHEN ds.registrationNo IS NULL THEN 0 ELSE 1 END AS hasTodayStats
+    FROM devices d
+    LEFT JOIN daily_stats ds
+      ON ds.registrationNo = d.registrationNo
+      AND ds.date = ?
     ${whereClause}
-    ORDER BY COALESCE(deviceNo, 999999999) ASC, registrationNo ASC
+    ORDER BY COALESCE(d.deviceNo, 999999999) ASC, d.registrationNo ASC
     LIMIT ? OFFSET ?
-  `).all(...params, cleanPageSize, (cleanPage - 1) * cleanPageSize);
+  `).all(statsDate, ...params, cleanPageSize, (cleanPage - 1) * cleanPageSize);
 
   return {
+    visibility: getDeviceVisibilitySettings(),
     pagination: {
       page: cleanPage,
       pageSize: cleanPageSize,
@@ -402,32 +993,86 @@ export function listDevicesByTelegramId(telegramId) {
     throw new AppError(400, 'telegramId yuborilishi kerak');
   }
 
+  const statsDate = toTashkentDate();
+
+  if (areDevicesVisibleToAll()) {
+    const rows = getDb()
+      .prepare(`
+        SELECT
+          d.registrationNo,
+          d.deviceSn,
+          d.userName,
+          d.plantName,
+          d.deviceModel,
+          d.telegramIds,
+          d.onlineStatus,
+          d.lastSeenAt,
+          d.lastCheckedAt,
+          d.addedAt,
+          d.deviceNo,
+          d.deviceName,
+          d.source,
+          d.trackingEnabled,
+          COALESCE(ds.yieldToday, 0) AS yieldToday,
+          ds.yieldTotal,
+          ds.acPower,
+          ds.updatedAt AS realtimeUpdatedAt,
+          ds.date AS statsDate,
+          CASE WHEN ds.registrationNo IS NULL THEN 0 ELSE 1 END AS hasTodayStats
+        FROM devices d
+        LEFT JOIN daily_stats ds
+          ON ds.registrationNo = d.registrationNo
+          AND ds.date = ?
+        ORDER BY COALESCE(d.deviceNo, 999999999) ASC, d.registrationNo ASC
+      `)
+      .all(statsDate);
+
+    return {
+      telegramId: cleanTelegramId,
+      scope: 'all-devices',
+      visibility: getDeviceVisibilitySettings(),
+      total: rows.length,
+      devices: rows.map(serializeDevice),
+    };
+  }
+
   const rows = getDb()
     .prepare(`
       SELECT
-        registrationNo,
-        deviceSn,
-        userName,
-        plantName,
-        deviceModel,
-        telegramIds,
-        onlineStatus,
-        lastSeenAt,
-        lastCheckedAt,
-        addedAt,
-        deviceNo,
-        deviceName,
-        source,
-        trackingEnabled
-      FROM devices
-      WHERE COALESCE(telegramIds, '') LIKE ?
-      ORDER BY COALESCE(deviceNo, 999999999) ASC, registrationNo ASC
+        d.registrationNo,
+        d.deviceSn,
+        d.userName,
+        d.plantName,
+        d.deviceModel,
+        d.telegramIds,
+        d.onlineStatus,
+        d.lastSeenAt,
+        d.lastCheckedAt,
+        d.addedAt,
+        d.deviceNo,
+        d.deviceName,
+        d.source,
+        d.trackingEnabled,
+        COALESCE(ds.yieldToday, 0) AS yieldToday,
+        ds.yieldTotal,
+        ds.acPower,
+        ds.updatedAt AS realtimeUpdatedAt,
+        ds.date AS statsDate,
+        CASE WHEN ds.registrationNo IS NULL THEN 0 ELSE 1 END AS hasTodayStats
+      FROM devices d
+      LEFT JOIN daily_stats ds
+        ON ds.registrationNo = d.registrationNo
+        AND ds.date = ?
+      WHERE COALESCE(d.telegramIds, '') LIKE ?
+      ORDER BY COALESCE(d.deviceNo, 999999999) ASC, d.registrationNo ASC
     `)
-    .all(`%${cleanTelegramId}%`)
+    .all(statsDate, `%${cleanTelegramId}%`)
     .filter((row) => parseTelegramIds(row.telegramIds).includes(cleanTelegramId));
 
   return {
     telegramId: cleanTelegramId,
+    scope: 'telegram',
+    visibility: getDeviceVisibilitySettings(),
     total: rows.length,
     devices: rows.map(serializeDevice),
   };
@@ -446,6 +1091,47 @@ export function getDeviceByRegistrationNo(registrationNo) {
   }
 
   return serializeDevice(device);
+}
+
+export function getEnergyChart({ registrationNo = null, date = null } = {}) {
+  const db = getDb();
+  const cleanDate = normaliseChartDate(date);
+  const cleanRegistrationNo =
+    registrationNo === null || registrationNo === undefined || registrationNo === ''
+      ? null
+      : normaliseText(registrationNo, {
+          label: 'registrationNo',
+          required: true,
+          maxLength: 100,
+        });
+
+  let device = null;
+  if (cleanRegistrationNo) {
+    device = getDeviceRow(cleanRegistrationNo);
+    if (!device) {
+      throw new AppError(404, 'Device topilmadi');
+    }
+  }
+
+  const total = getDailyEnergyTotal(db, cleanDate, cleanRegistrationNo);
+  const yieldRows = getYieldHistoryRows(db, cleanDate, cleanRegistrationNo);
+  const data = buildHourlyYieldChartData(yieldRows, total);
+
+  return {
+    scope: cleanRegistrationNo ? 'device' : 'all-devices',
+    date: cleanDate,
+    registrationNo: cleanRegistrationNo,
+    total,
+    unit: 'kWh',
+    valueUnit: 'kWh',
+    source: 'device_status_history.yieldToday',
+    deviceCount: getEnergyChartDeviceCount(db, cleanRegistrationNo),
+    dataDeviceCount: getEnergyChartDataDeviceCount(db, cleanDate, cleanRegistrationNo),
+    timeZone: 'Asia/Tashkent',
+    offset: '+05:00',
+    data,
+    device: device ? serializeDevice(device) : null,
+  };
 }
 
 export function listRealtimeSyncTargets() {
@@ -644,7 +1330,7 @@ export function createDevice(payload) {
     userName: normaliseText(payload?.userName, { label: 'userName', maxLength: 150 }),
     plantName: normaliseText(payload?.plantName, { label: 'plantName', maxLength: 255 }),
     deviceModel: normaliseText(payload?.deviceModel, { label: 'deviceModel', maxLength: 100 }),
-    telegramIds: normaliseTelegramIds(payload?.telegramIds) ?? [],
+    telegramIds: normaliseTelegramIdsFromPayload(payload, []),
     onlineStatus: normaliseStatus(payload?.onlineStatus, 'Unknown'),
     lastSeenAt: normaliseOptionalDate(payload?.lastSeenAt, 'lastSeenAt') ?? null,
     lastCheckedAt: normaliseOptionalDate(payload?.lastCheckedAt, 'lastCheckedAt') ?? null,
@@ -894,8 +1580,8 @@ export function updateDevice(registrationNo, payload) {
     deviceModel: hasOwn(payload, 'deviceModel')
       ? normaliseText(payload.deviceModel, { label: 'deviceModel', maxLength: 100 })
       : existing.deviceModel,
-    telegramIds: hasOwn(payload, 'telegramIds')
-      ? normaliseTelegramIds(payload.telegramIds) ?? []
+    telegramIds: hasAnyOwn(payload, [...TELEGRAM_ID_PAYLOAD_KEYS, ...USER_ID_PAYLOAD_KEYS])
+      ? normaliseTelegramIdsFromPayload(payload, [])
       : parseTelegramIds(existing.telegramIds),
     onlineStatus: hasOwn(payload, 'onlineStatus')
       ? normaliseStatus(payload.onlineStatus, existing.onlineStatus || 'Unknown')

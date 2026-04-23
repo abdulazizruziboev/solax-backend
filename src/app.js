@@ -30,11 +30,24 @@ function buildCorsOptions() {
   };
 }
 
+function noStore(_req, res, next) {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  next();
+}
+
+function clearHttp3AltSvc(_req, res, next) {
+  res.set('Alt-Svc', 'clear');
+  next();
+}
+
 export function createApp() {
   getDb();
 
   const app = express();
   app.disable('x-powered-by');
+  app.use(clearHttp3AltSvc);
   app.use(cors(buildCorsOptions()));
   app.use(express.json({ limit: '1mb' }));
 
@@ -47,17 +60,17 @@ export function createApp() {
     });
   });
 
-  app.get('/openapi.json', (_req, res) => {
+  app.get('/openapi.json', noStore, (_req, res) => {
     res.json(openApiSpec);
   });
 
-  app.use('/docs', swaggerUiHandler, swaggerUiSetup);
+  app.use('/docs', noStore, swaggerUiHandler, swaggerUiSetup);
 
   app.get('/api/health', (_req, res) => {
     res.json({
       ok: true,
       service: 'solax-backend',
-      telegramEnabled: Boolean(config.telegramBotToken),
+      telegramEnabled: config.telegramBotEnabled && Boolean(config.telegramBotToken),
       generatedAt: new Date().toISOString(),
       snapshot: getHealthSnapshot(),
       deviceSync: getDeviceSyncState(),

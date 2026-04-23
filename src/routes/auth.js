@@ -2,7 +2,7 @@ import { Router } from 'express';
 
 import { AppError, asyncHandler } from '../middleware/errors.js';
 import { requireAuth } from '../middleware/auth.js';
-import { authenticateLocalUser, serializeUser, upsertTelegramUser } from '../services/user-service.js';
+import { assertActiveUser, authenticateLocalUser, serializeUser, upsertTelegramUser } from '../services/user-service.js';
 import { createAccessToken } from '../utils/jwt.js';
 import { verifyTelegramInitData } from '../utils/telegram.js';
 
@@ -33,7 +33,7 @@ authRouter.post(
   asyncHandler(async (req, res) => {
     const { initData } = req.body || {};
     const telegramAuth = verifyTelegramInitData(initData);
-    const user = upsertTelegramUser(telegramAuth.user);
+    const user = assertActiveUser(upsertTelegramUser(telegramAuth.user));
     const token = createAccessToken(user);
 
     res.json({

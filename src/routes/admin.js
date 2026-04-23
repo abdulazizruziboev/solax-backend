@@ -1,6 +1,6 @@
 import { Router } from 'express';
 
-import { requireAuth, requireRoles } from '../middleware/auth.js';
+import { requireAuth, requirePermission, requireRoles } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errors.js';
 import { getAdminStatusSummary } from '../services/user-service.js';
 
@@ -8,6 +8,7 @@ const adminRouter = Router();
 
 adminRouter.use(requireAuth);
 adminRouter.use(requireRoles('admin', 'super_admin'));
+adminRouter.use(requirePermission('admins.crud'));
 
 adminRouter.get(
   '/status',

@@ -1,4 +1,5 @@
 import { getTelegramBotState, startTelegramBot, stopTelegramBot } from './services/telegram-bot-service.js';
+import { config } from './config.js';
 
 async function shutdown(signal) {
   console.log(`[telegram-bot] ${signal} qabul qilindi, bot to'xtatilmoqda`);
@@ -21,6 +22,11 @@ process.on('SIGTERM', () => {
 });
 
 try {
+  if (!config.telegramBotEnabled) {
+    console.warn('[telegram-bot] TELEGRAM_BOT_ENABLED=false, bot ishga tushmadi.');
+    process.exit(0);
+  }
+
   console.log('[telegram-bot] Bot ishga tushmoqda...');
   const pollingPromise = startTelegramBot();
   const state = getTelegramBotState();

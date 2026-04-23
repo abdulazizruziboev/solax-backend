@@ -61,6 +61,11 @@ async function startBackend() {
 }
 
 function startBot() {
+  if (!config.telegramBotEnabled) {
+    console.warn('[telegram-bot] TELEGRAM_BOT_ENABLED=false, bot ishga tushmadi.');
+    return;
+  }
+
   if (!config.telegramBotToken) {
     console.warn('[telegram-bot] TELEGRAM_BOT_TOKEN sozlanmagan, bot ishga tushmadi.');
     return;

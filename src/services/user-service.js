@@ -1,6 +1,6 @@
 import { getDb } from '../db.js';
 import { config } from '../config.js';
-import { USER_ROLES, USER_STATUSES } from '../constants.js';
+import { LEGACY_PERMISSION_ALIASES, USER_PERMISSIONS, USER_ROLES, USER_STATUSES } from '../constants.js';
 import { AppError } from '../middleware/errors.js';
 import { hashPassword, verifyPassword } from '../utils/password.js';
 
@@ -29,6 +29,61 @@ function resolveTelegramRole(telegramId, fallbackRole = 'user') {
   return fallbackRole;
 }
 
+function normaliseUserSummary(summary) {
+  return {
+    totalUsers: summary?.totalUsers ?? 0,
+    totalSuperAdmins: summary?.totalSuperAdmins ?? 0,
+    totalAdmins: summary?.totalAdmins ?? 0,
+    totalRegularUsers: summary?.totalRegularUsers ?? 0,
+    telegramOnlyUsers: summary?.telegramOnlyUsers ?? 0,
+    localOnlyUsers: summary?.localOnlyUsers ?? 0,
+    hybridUsers: summary?.hybridUsers ?? 0,
+  };
+}
+
+function parsePermissions(value) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+
+  try {
+    const parsed = JSON.parse(value || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalisePermissions(permissions, { strict = true } = {}) {
+  const normalisedPermissions = new Set();
+
+  for (const permission of Array.isArray(permissions) ? permissions : []) {
+    const cleanPermission = String(permission || '').trim();
+    const aliasPermissions = LEGACY_PERMISSION_ALIASES[cleanPermission];
+
+    if (aliasPermissions) {
+      for (const aliasPermission of aliasPermissions) {
+        normalisedPermissions.add(aliasPermission);
+      }
+      continue;
+    }
+
+    if (USER_PERMISSIONS.includes(cleanPermission)) {
+      normalisedPermissions.add(cleanPermission);
+      continue;
+    }
+
+    if (strict && cleanPermission) {
+      throw new AppError(
+        400,
+        `Permission noto'g'ri. Ruxsat etilgan qiymatlar: ${USER_PERMISSIONS.join(', ')}`,
+      );
+    }
+  }
+
+  return USER_PERMISSIONS.filter((permission) => normalisedPermissions.has(permission));
+}
+
 export function serializeUser(user) {
   if (!user) {
     return null;
@@ -49,13 +104,7 @@ export function serializeUser(user) {
     updatedAt: user.updatedAt,
     lastLoginAt: user.lastLoginAt,
     lastTelegramAuthAt: user.lastTelegramAuthAt,
-    permissions: (function() {
-      try {
-        return JSON.parse(user.permissions || '[]');
-      } catch (e) {
-        return [];
-      }
-    })(),
+    permissions: normalisePermissions(parsePermissions(user.permissions), { strict: false }),
   };
 }
 
@@ -147,20 +196,23 @@ export function listUsers({ role, search }) {
       id ASC
   `).all(...params);
 
-  const summary = db.prepare(`
+  const summarySql = `
     SELECT
       COUNT(*) AS totalUsers,
-      SUM(CASE WHEN role = 'super_admin' THEN 1 ELSE 0 END) AS totalSuperAdmins,
-      SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END) AS totalAdmins,
-      SUM(CASE WHEN role = 'user' THEN 1 ELSE 0 END) AS totalRegularUsers,
-      SUM(CASE WHEN authProvider = 'telegram' THEN 1 ELSE 0 END) AS telegramOnlyUsers,
-      SUM(CASE WHEN authProvider = 'local' THEN 1 ELSE 0 END) AS localOnlyUsers,
-      SUM(CASE WHEN authProvider = 'hybrid' THEN 1 ELSE 0 END) AS hybridUsers
+      COALESCE(SUM(CASE WHEN role = 'super_admin' THEN 1 ELSE 0 END), 0) AS totalSuperAdmins,
+      COALESCE(SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END), 0) AS totalAdmins,
+      COALESCE(SUM(CASE WHEN role = 'user' THEN 1 ELSE 0 END), 0) AS totalRegularUsers,
+      COALESCE(SUM(CASE WHEN authProvider = 'telegram' THEN 1 ELSE 0 END), 0) AS telegramOnlyUsers,
+      COALESCE(SUM(CASE WHEN authProvider = 'local' THEN 1 ELSE 0 END), 0) AS localOnlyUsers,
+      COALESCE(SUM(CASE WHEN authProvider = 'hybrid' THEN 1 ELSE 0 END), 0) AS hybridUsers
     FROM app_users
-  `).get();
+  `;
+  const summary = db.prepare(`${summarySql} ${whereClause}`).get(...params);
+  const globalSummary = db.prepare(summarySql).get();
 
   return {
-    summary,
+    summary: normaliseUserSummary(summary),
+    globalSummary: normaliseUserSummary(globalSummary),
     users: users.map(serializeUser),
   };
 }
@@ -191,11 +243,13 @@ export function getUserStatusSummary() {
 export function getAdminStatusSummary() {
   const summary = getDb().prepare(`
     SELECT
-      COUNT(*) AS totalAdmins,
-      COALESCE(SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END), 0) AS activeAdmins,
-      COALESCE(SUM(CASE WHEN status = 'disabled' THEN 1 ELSE 0 END), 0) AS blockedAdmins,
+      COALESCE(SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END), 0) AS totalAdmins,
+      COALESCE(SUM(CASE WHEN role = 'admin' AND status = 'active' THEN 1 ELSE 0 END), 0) AS activeAdmins,
+      COALESCE(SUM(CASE WHEN role = 'admin' AND status = 'disabled' THEN 1 ELSE 0 END), 0) AS blockedAdmins,
       COALESCE(SUM(CASE WHEN role = 'super_admin' THEN 1 ELSE 0 END), 0) AS superAdmins,
-      COALESCE(SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END), 0) AS admins
+      COALESCE(SUM(CASE WHEN role = 'super_admin' AND status = 'active' THEN 1 ELSE 0 END), 0) AS activeSuperAdmins,
+      COALESCE(SUM(CASE WHEN role = 'super_admin' AND status = 'disabled' THEN 1 ELSE 0 END), 0) AS blockedSuperAdmins,
+      COALESCE(COUNT(*), 0) AS totalPrivilegedUsers
     FROM app_users
     WHERE role IN ('super_admin', 'admin')
   `).get();
@@ -205,7 +259,10 @@ export function getAdminStatusSummary() {
     activeAdmins: summary.activeAdmins ?? 0,
     blockedAdmins: summary.blockedAdmins ?? 0,
     superAdmins: summary.superAdmins ?? 0,
-    admins: summary.admins ?? 0,
+    activeSuperAdmins: summary.activeSuperAdmins ?? 0,
+    blockedSuperAdmins: summary.blockedSuperAdmins ?? 0,
+    admins: summary.totalAdmins ?? 0,
+    totalPrivilegedUsers: summary.totalPrivilegedUsers ?? 0,
   };
 }
 
@@ -281,7 +338,6 @@ export function upsertTelegramUser(telegramUser) {
         telegramPhotoUrl = ?,
         authProvider = ?,
         role = ?,
-        status = 'active',
         lastLoginAt = CURRENT_TIMESTAMP,
         lastTelegramAuthAt = CURRENT_TIMESTAMP,
         updatedAt = CURRENT_TIMESTAMP
@@ -335,13 +391,17 @@ export function upsertTelegramUser(telegramUser) {
   return getUserById(createdUser.lastInsertRowid);
 }
 
-export function updateUserRole({ targetUserId, newRole, changedByUserId }) {
+export function updateUserRole({ targetUserId, newRole, changedByUserId, changedByRole }) {
   const db = getDb();
   assertRole(newRole);
 
   const targetUser = getUserByIdWithSecrets(targetUserId);
   if (!targetUser) {
     throw new AppError(404, 'Foydalanuvchi topilmadi');
+  }
+
+  if (changedByRole !== 'super_admin' && (targetUser.role === 'super_admin' || newRole === 'super_admin')) {
+    throw new AppError(403, "Super admin rolini boshqarish huquqi yo'q");
   }
 
   if (targetUser.status !== 'active') {
@@ -364,9 +424,9 @@ export function updateUserRole({ targetUserId, newRole, changedByUserId }) {
 
   db.prepare(`
     UPDATE app_users
-    SET role = ?, updatedAt = CURRENT_TIMESTAMP
+    SET role = ?, permissions = ?, updatedAt = CURRENT_TIMESTAMP
     WHERE id = ?
-  `).run(newRole, targetUser.id);
+  `).run(newRole, newRole === 'admin' ? targetUser.permissions : '[]', targetUser.id);
 
   db.prepare(`
     INSERT INTO role_change_logs (userId, previousRole, nextRole, changedBy)
@@ -376,7 +436,7 @@ export function updateUserRole({ targetUserId, newRole, changedByUserId }) {
   return getUserById(targetUser.id);
 }
 
-export function updateUserStatus({ targetUserId, newStatus, changedByUserId }) {
+export function updateUserStatus({ targetUserId, newStatus, changedByUserId, changedByRole, canManageAdmins = false }) {
   const db = getDb();
   if (!USER_STATUSES.includes(newStatus)) {
     throw new AppError(400, `Status noto'g'ri. Ruxsat etilgan qiymatlar: ${USER_STATUSES.join(', ')}`);
@@ -393,6 +453,10 @@ export function updateUserStatus({ targetUserId, newStatus, changedByUserId }) {
 
   if (targetUser.role === 'super_admin') {
     throw new AppError(400, "Super adminni bloklab bo'lmaydi");
+  }
+
+  if (targetUser.role === 'admin' && changedByRole !== 'super_admin' && !canManageAdmins) {
+    throw new AppError(403, "Admin statusini o'zgartirish huquqi yo'q");
   }
 
   if (targetUser.status === newStatus) {
@@ -419,7 +483,11 @@ export function updateUserPermissions({ targetUserId, permissions, changedByUser
     throw new AppError(400, "Super admin huquqlarini o'zgartirib bo'lmaydi");
   }
 
-  const permissionsString = JSON.stringify(Array.isArray(permissions) ? permissions : []);
+  if (targetUser.role !== 'admin') {
+    throw new AppError(400, 'Permission faqat admin foydalanuvchilar uchun beriladi');
+  }
+
+  const permissionsString = JSON.stringify(normalisePermissions(permissions));
 
   db.prepare(`
     UPDATE app_users
@@ -428,6 +496,100 @@ export function updateUserPermissions({ targetUserId, permissions, changedByUser
   `).run(permissionsString, targetUser.id);
 
   return getUserById(targetUser.id);
+}
+
+function parseTelegramIds(value) {
+  if (!value) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.map((item) => String(item ?? '').trim()).filter(Boolean);
+  } catch (_error) {
+    return [];
+  }
+}
+
+function removeTelegramIdFromDevices(db, telegramId) {
+  const cleanTelegramId = String(telegramId || '').trim();
+  if (!cleanTelegramId) {
+    return 0;
+  }
+
+  const rows = db
+    .prepare(
+      `
+        SELECT registrationNo, telegramIds
+        FROM devices
+        WHERE COALESCE(telegramIds, '') LIKE ?
+      `,
+    )
+    .all(`%${cleanTelegramId}%`);
+  const updateDeviceTelegramIds = db.prepare('UPDATE devices SET telegramIds = ? WHERE registrationNo = ?');
+  let updated = 0;
+
+  for (const row of rows) {
+    const telegramIds = parseTelegramIds(row.telegramIds);
+    if (!telegramIds.includes(cleanTelegramId)) {
+      continue;
+    }
+
+    updateDeviceTelegramIds.run(
+      JSON.stringify(telegramIds.filter((item) => item !== cleanTelegramId)),
+      row.registrationNo,
+    );
+    updated += 1;
+  }
+
+  return updated;
+}
+
+export function deleteUser({ targetUserId, deletedByUserId, deletedByRole, canManageAdmins = false }) {
+  const db = getDb();
+  const targetUser = getUserByIdWithSecrets(targetUserId);
+
+  if (!targetUser) {
+    throw new AppError(404, 'Foydalanuvchi topilmadi');
+  }
+
+  if (targetUser.id === deletedByUserId) {
+    throw new AppError(400, "O'zingizni o'chira olmaysiz");
+  }
+
+  if (targetUser.role === 'super_admin') {
+    throw new AppError(400, "Super adminni o'chirib bo'lmaydi");
+  }
+
+  if (targetUser.role === 'admin' && deletedByRole !== 'super_admin' && !canManageAdmins) {
+    throw new AppError(403, "Adminni o'chirish huquqi yo'q");
+  }
+
+  const deletedUser = serializeUser(targetUser);
+  let unlinkedDevices = 0;
+
+  db.exec('BEGIN');
+
+  try {
+    unlinkedDevices = removeTelegramIdFromDevices(db, targetUser.telegramId);
+    db.prepare('UPDATE app_users SET createdBy = NULL WHERE createdBy = ?').run(targetUser.id);
+    db.prepare('DELETE FROM role_change_logs WHERE userId = ? OR changedBy = ?').run(targetUser.id, targetUser.id);
+    db.prepare('DELETE FROM app_users WHERE id = ?').run(targetUser.id);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+
+  return {
+    deletedUser,
+    deletedUserId: targetUser.id,
+    unlinkedDevices,
+  };
 }
 
 export function ensureUserCanCreateRole(currentUserRole, targetRole) {

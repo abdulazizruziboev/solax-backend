@@ -1,4 +1,7 @@
 const DEFAULT_JWT_SECRET = 'dev-solax-secret-change-me';
+const APP_TIME_ZONE = process.env.TZ || 'Asia/Tashkent';
+
+process.env.TZ = APP_TIME_ZONE;
 
 function toInt(value, fallback) {
   const parsed = Number.parseInt(value ?? '', 10);
@@ -39,6 +42,7 @@ const configuredPublicUrl =
   trimTrailingSlash(process.env.PUBLIC_URL) || `http://localhost:${configuredPort}`;
 
 export const config = Object.freeze({
+  timeZone: APP_TIME_ZONE,
   port: configuredPort,
   host: configuredHost,
   publicUrl: configuredPublicUrl,
@@ -53,7 +57,9 @@ export const config = Object.freeze({
   superAdminPassword: process.env.SUPER_ADMIN_PASSWORD || 'ChangeMe123!',
   superAdminName: (process.env.SUPER_ADMIN_NAME || 'Super Admin').trim(),
   superAdminTelegramIds: toList(process.env.SUPER_ADMIN_TELEGRAM_ID),
+  telegramBotEnabled: toBool(process.env.TELEGRAM_BOT_ENABLED, true),
   telegramBotToken: (process.env.TELEGRAM_BOT_TOKEN || '').trim(),
+  telegramWebAppUrl: trimTrailingSlash(process.env.TELEGRAM_WEB_APP_URL) || '',
   telegramInitDataTtl: toInt(process.env.TELEGRAM_INIT_DATA_TTL, 86400),
   telegramBotPollingTimeoutSeconds: Math.max(
     1,
@@ -72,7 +78,7 @@ export const config = Object.freeze({
     3600000,
     toInt(process.env.SOLAX_REALTIME_SYNC_INTERVAL_MS, 3600000),
   ),
-  solaxRealtimeRequestDelayMs: Math.max(0, toInt(process.env.SOLAX_REALTIME_REQUEST_DELAY_MS, 500)),
+  solaxRealtimeRequestDelayMs: Math.max(0, toInt(process.env.SOLAX_REALTIME_REQUEST_DELAY_MS, 6500)),
   solaxRealtimeRequestTimeoutMs: Math.max(
     5000,
     toInt(process.env.SOLAX_REALTIME_REQUEST_TIMEOUT_MS, 15000),

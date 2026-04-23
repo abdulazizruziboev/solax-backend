@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { config } from '../config.js';
@@ -7,6 +8,7 @@ import {
   runSolaxRealtimeSyncNow,
   setSolaxRealtimeSyncIntervalMs,
 } from './solax-realtime-sync-service.js';
+import { areDevicesVisibleToAll } from './device-service.js';
 import { getHealthSnapshot } from './user-service.js';
 
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
@@ -22,6 +24,7 @@ const BUTTONS = Object.freeze({
   SEARCH: 'Qurilma qidirish',
   STATS: 'Admin statistika',
   SYNC_SETTINGS: 'Quvvat sync sozlash',
+  WEB_APP: 'Veb-ilova',
   CANCEL: 'Bekor qilish',
 });
 
@@ -36,7 +39,7 @@ const BOT_COMMANDS = [
 ];
 
 const state = {
-  enabled: Boolean(config.telegramBotToken),
+  enabled: config.telegramBotEnabled && Boolean(config.telegramBotToken),
   running: false,
   startedAt: null,
   lastPollAt: null,
@@ -62,8 +65,13 @@ const REALTIME_INTERVAL_OPTIONS = [
 let pollingPromise = null;
 let stopRequested = false;
 let currentPollController = null;
+const replyMessageContext = new AsyncLocalStorage();
 
 function ensureBotToken() {
+  if (!config.telegramBotEnabled) {
+    throw new Error('TELEGRAM_BOT_ENABLED=false, bot polling o\'chirilgan');
+  }
+
   if (!config.telegramBotToken) {
     throw new Error('TELEGRAM_BOT_TOKEN sozlanmagan');
   }
@@ -71,6 +79,39 @@ function ensureBotToken() {
 
 function getTelegramApiUrl(method) {
   return `${TELEGRAM_API_BASE}/bot${config.telegramBotToken}/${method}`;
+}
+
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function withReplyMessagePayload(chatId, extra = {}) {
+  const payload = { ...extra };
+  const explicitReplyToMessageId = payload.replyToMessageId;
+  delete payload.replyToMessageId;
+
+  if (payload.reply_parameters || payload.reply_to_message_id) {
+    return payload;
+  }
+
+  const replyContext = replyMessageContext.getStore();
+  const replyToMessageId = explicitReplyToMessageId ?? replyContext?.messageId;
+
+  if (!replyToMessageId) {
+    return payload;
+  }
+
+  if (!explicitReplyToMessageId && String(replyContext?.chatId ?? '') !== String(chatId ?? '')) {
+    return payload;
+  }
+
+  payload.reply_to_message_id = replyToMessageId;
+
+  if (!hasOwn(payload, 'allow_sending_without_reply')) {
+    payload.allow_sending_without_reply = true;
+  }
+
+  return payload;
 }
 
 function encodeCallbackValue(value) {
@@ -104,11 +145,19 @@ function parseTelegramIds(rawValue) {
 function hasAdminAccess(telegramUserId, appUser) {
   const cleanTelegramUserId = String(telegramUserId || '').trim();
 
+  if (isBlockedAppUser(appUser)) {
+    return false;
+  }
+
   if (appUser?.role === 'admin' || appUser?.role === 'super_admin') {
     return true;
   }
 
   return config.superAdminTelegramIds.includes(cleanTelegramUserId);
+}
+
+function isBlockedAppUser(appUser) {
+  return Boolean(appUser?.status && appUser.status !== 'active');
 }
 
 function getEffectiveRole(telegramUserId, appUser) {
@@ -184,7 +233,7 @@ function getDeviceRowsByTelegramId(telegramId) {
 }
 
 function getAccessibleDeviceRows(telegramUserId, appUser) {
-  return hasAdminAccess(telegramUserId, appUser)
+  return hasAdminAccess(telegramUserId, appUser) || areDevicesVisibleToAll()
     ? getAllDeviceRows()
     : getDeviceRowsByTelegramId(telegramUserId);
 }
@@ -195,6 +244,7 @@ function getUserByTelegramId(telegramId) {
       SELECT
         id,
         role,
+        status,
         username,
         displayName,
         telegramId,
@@ -370,7 +420,7 @@ function canAccessDevice(telegramUserId, deviceRow, appUser) {
     return false;
   }
 
-  if (hasAdminAccess(telegramUserId, appUser)) {
+  if (hasAdminAccess(telegramUserId, appUser) || areDevicesVisibleToAll()) {
     return true;
   }
 
@@ -408,7 +458,18 @@ function buildInlineKeyboard(rows) {
 }
 
 function buildHomeOnlyInlineKeyboard() {
-  return [[{ text: BUTTONS.HOME, callback_data: 'm:home' }]];
+  return [
+    [{ text: BUTTONS.HOME, callback_data: 'm:home' }],
+    ...buildWebAppInlineKeyboardRows(),
+  ];
+}
+
+function buildWebAppInlineKeyboardRows() {
+  if (!config.telegramWebAppUrl) {
+    return [];
+  }
+
+  return [[{ text: BUTTONS.WEB_APP, web_app: { url: config.telegramWebAppUrl } }]];
 }
 
 function buildHomeInlineKeyboard(appUser, telegramUserId) {
@@ -429,6 +490,8 @@ function buildHomeInlineKeyboard(appUser, telegramUserId) {
       { text: BUTTONS.SYNC_SETTINGS, callback_data: 'm:realtime' },
     ]);
   }
+
+  rows.push(...buildWebAppInlineKeyboardRows());
 
   return rows;
 }
@@ -624,9 +687,11 @@ function buildHelpText(telegramUserId, appUser) {
   ];
 
   if (hasAdminAccess(telegramUserId, appUser)) {
-    lines.push(`Inline menyu: ${BUTTONS.DEVICES}, ${BUTTONS.MY_ID}, ${BUTTONS.SEARCH}, ${BUTTONS.HELP}, ${BUTTONS.STATS}`);
+    lines.push(
+      `Inline menyu: ${BUTTONS.DEVICES}, ${BUTTONS.MY_ID}, ${BUTTONS.SEARCH}, ${BUTTONS.HELP}, ${BUTTONS.STATS}, ${BUTTONS.WEB_APP}`,
+    );
   } else {
-    lines.push(`Inline menyu: ${BUTTONS.DEVICES}, ${BUTTONS.MY_ID}, ${BUTTONS.SEARCH}, ${BUTTONS.HELP}`);
+    lines.push(`Inline menyu: ${BUTTONS.DEVICES}, ${BUTTONS.MY_ID}, ${BUTTONS.SEARCH}, ${BUTTONS.HELP}, ${BUTTONS.WEB_APP}`);
   }
 
   lines.push('');
@@ -838,12 +903,12 @@ async function registerBotCommands() {
   });
 }
 
-async function answerCallbackQuery(callbackQueryId, text = '') {
+async function answerCallbackQuery(callbackQueryId, text = '', { showAlert = false } = {}) {
   try {
     await callTelegram('answerCallbackQuery', {
       callback_query_id: callbackQueryId,
       text: text || undefined,
-      show_alert: false,
+      show_alert: showAlert,
     });
   } catch (error) {
     console.error('[telegram-bot] callback answer xatosi:', error.message);
@@ -855,7 +920,7 @@ export async function sendTelegramMessage(chatId, text, extra = {}) {
     chat_id: chatId,
     text,
     disable_web_page_preview: true,
-    ...extra,
+    ...withReplyMessagePayload(chatId, extra),
   });
 }
 
@@ -920,6 +985,39 @@ async function editTelegramMessage(chatId, messageId, text, inlineKeyboardRows =
   }
 }
 
+function buildBlockedUserText() {
+  return [
+    'Akkount bloklangan.',
+    'Botdan foydalanish uchun admin bilan boglaning.',
+  ].join('\n');
+}
+
+async function rejectBlockedMessage(message) {
+  clearUserSession(message.from.id);
+
+  return sendTelegramMessage(message.chat.id, buildBlockedUserText(), {
+    reply_markup: {
+      remove_keyboard: true,
+    },
+  });
+}
+
+async function rejectBlockedCallback(callbackQuery) {
+  clearUserSession(callbackQuery.from.id);
+  await answerCallbackQuery(callbackQuery.id, 'Akkount bloklangan', { showAlert: true });
+
+  try {
+    await editTelegramMessage(
+      callbackQuery.message.chat.id,
+      callbackQuery.message.message_id,
+      buildBlockedUserText(),
+      [],
+    );
+  } catch (_error) {
+    await sendTelegramMessage(callbackQuery.message.chat.id, buildBlockedUserText()).catch(() => null);
+  }
+}
+
 async function sendHomeMenu(chatId, telegramUserId, appUser, { includeGreeting = false } = {}) {
   if (includeGreeting) {
     const displayName = appUser?.displayName || `User ${telegramUserId}`;
@@ -952,6 +1050,8 @@ async function sendDevicesMenu(chatId, telegramUserId, appUser, page = 0) {
   );
   const title = hasAdminAccess(telegramUserId, appUser)
     ? `Qurilmalar royxati (${accessibleDevices.length} ta)`
+    : areDevicesVisibleToAll()
+      ? `Barcha qurilmalar (${accessibleDevices.length} ta)`
     : `Sizga biriktirilgan qurilmalar (${accessibleDevices.length} ta)`;
 
   return sendTelegramMessage(chatId, buildDeviceListText(pageDevices, safePage, totalPages, title), {
@@ -969,6 +1069,8 @@ async function editDevicesMenu(callbackQuery, telegramUserId, appUser, page = 0)
   );
   const title = hasAdminAccess(telegramUserId, appUser)
     ? `Qurilmalar royxati (${accessibleDevices.length} ta)`
+    : areDevicesVisibleToAll()
+      ? `Barcha qurilmalar (${accessibleDevices.length} ta)`
     : `Sizga biriktirilgan qurilmalar (${accessibleDevices.length} ta)`;
 
   return editTelegramMessage(
@@ -1320,6 +1422,11 @@ async function handleIncomingMessage(message) {
   const appUser = getUserByTelegramId(message.from.id);
   const text = String(message.text || '').trim();
 
+  if (isBlockedAppUser(appUser)) {
+    await rejectBlockedMessage(message);
+    return;
+  }
+
   if (text) {
     await ensureInlineOnlyChat(message.chat.id);
 
@@ -1357,6 +1464,11 @@ async function handleCallbackQuery(callbackQuery) {
 
   const appUser = getUserByTelegramId(callbackQuery.from.id);
   const parsed = parseCallbackData(callbackQuery.data);
+
+  if (isBlockedAppUser(appUser)) {
+    await rejectBlockedCallback(callbackQuery);
+    return;
+  }
 
   try {
     if (parsed.group === 'm') {
@@ -1489,13 +1601,26 @@ async function processUpdates(updates) {
     }
 
     if (update.message) {
-      await handleIncomingMessage(update.message);
+      await replyMessageContext.run(
+        {
+          chatId: update.message.chat.id,
+          messageId: update.message.message_id,
+        },
+        async () => handleIncomingMessage(update.message),
+      );
       state.lastHandledAt = new Date().toISOString();
       continue;
     }
 
     if (update.callback_query) {
-      await handleCallbackQuery(update.callback_query);
+      const callbackMessage = update.callback_query.message;
+      await replyMessageContext.run(
+        {
+          chatId: callbackMessage?.chat?.id,
+          messageId: callbackMessage?.message_id,
+        },
+        async () => handleCallbackQuery(update.callback_query),
+      );
       state.lastHandledAt = new Date().toISOString();
     }
   }
