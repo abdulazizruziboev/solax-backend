@@ -12,30 +12,22 @@ import { areDevicesVisibleToAll } from './device-service.js';
 import { getHealthSnapshot } from './user-service.js';
 
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
+const TELEGRAM_PARSE_MODE = 'HTML';
+const TELEGRAM_WEB_APP_FULLSCREEN_PARAM = 'tgFullscreen';
 const DEVICE_PAGE_SIZE = 6;
 const SEARCH_RESULT_LIMIT = 8;
 const SESSION_TTL_MS = 10 * 60 * 1000;
 
 const BUTTONS = Object.freeze({
   HOME: 'Bosh menyu',
-  DEVICES: 'Qurilmalar',
-  MY_ID: 'Mening ID',
-  HELP: 'Yordam',
-  SEARCH: 'Qurilma qidirish',
-  STATS: 'Admin statistika',
   SYNC_SETTINGS: 'Quvvat sync sozlash',
   WEB_APP: 'Veb-ilova',
-  CANCEL: 'Bekor qilish',
 });
 
 const BOT_COMMANDS = [
   { command: 'start', description: 'Botni ishga tushirish' },
-  { command: 'menu', description: 'Bosh menyuni ochish' },
-  { command: 'help', description: 'Yordam va buyruqlar' },
-  { command: 'myid', description: 'Telegram ID ni korish' },
-  { command: 'devices', description: 'Qurilmalar royxati' },
-  { command: 'device', description: 'Bitta qurilma: /device REG' },
-  { command: 'search', description: 'Qurilma qidirish' },
+  { command: 'sync', description: 'Quvvat sync sozlamalari' },
+  { command: 'interval', description: 'Custom quvvat sync interval' },
 ];
 
 const state = {
@@ -54,6 +46,10 @@ const state = {
 const userSessions = new Map();
 const inlineOnlyChats = new Set();
 const REALTIME_INTERVAL_OPTIONS = [
+  { label: '1 daqiqa', ms: 60 * 1000 },
+  { label: '5 daqiqa', ms: 5 * 60 * 1000 },
+  { label: '10 daqiqa', ms: 10 * 60 * 1000 },
+  { label: '30 daqiqa', ms: 30 * 60 * 1000 },
   { label: '1 soat', ms: 60 * 60 * 1000 },
   { label: '2 soat', ms: 2 * 60 * 60 * 1000 },
   { label: '3 soat', ms: 3 * 60 * 60 * 1000 },
@@ -85,6 +81,21 @@ function hasOwn(object, key) {
   return Object.prototype.hasOwnProperty.call(object, key);
 }
 
+function escapeTelegramHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+}
+
+function formatTelegramCode(value) {
+  return `<code>${escapeTelegramHtml(value)}</code>`;
+}
+
+function formatTelegramField(label, value) {
+  return `<b>${escapeTelegramHtml(label)}:</b> ${escapeTelegramHtml(value ?? '-')}`;
+}
+
 function withReplyMessagePayload(chatId, extra = {}) {
   const payload = { ...extra };
   const explicitReplyToMessageId = payload.replyToMessageId;
@@ -112,14 +123,6 @@ function withReplyMessagePayload(chatId, extra = {}) {
   }
 
   return payload;
-}
-
-function encodeCallbackValue(value) {
-  return encodeURIComponent(String(value ?? ''));
-}
-
-function decodeCallbackValue(value) {
-  return decodeURIComponent(String(value ?? ''));
 }
 
 function parseTelegramIds(rawValue) {
@@ -457,38 +460,46 @@ function buildInlineKeyboard(rows) {
   return rows.length > 0 ? { inline_keyboard: rows } : undefined;
 }
 
-function buildHomeOnlyInlineKeyboard() {
-  return [
-    [{ text: BUTTONS.HOME, callback_data: 'm:home' }],
-    ...buildWebAppInlineKeyboardRows(),
-  ];
+function getTelegramWebAppUrl() {
+  const rawUrl = String(config.telegramWebAppUrl || '').trim();
+
+  if (!rawUrl) {
+    return null;
+  }
+
+  try {
+    const url = new URL(rawUrl);
+    url.searchParams.set(TELEGRAM_WEB_APP_FULLSCREEN_PARAM, '1');
+    return url.toString();
+  } catch {
+    const hashIndex = rawUrl.indexOf('#');
+    const baseUrl = hashIndex === -1 ? rawUrl : rawUrl.slice(0, hashIndex);
+    const hash = hashIndex === -1 ? '' : rawUrl.slice(hashIndex);
+    const separator = baseUrl.includes('?') ? '&' : '?';
+
+    return `${baseUrl}${separator}${TELEGRAM_WEB_APP_FULLSCREEN_PARAM}=1${hash}`;
+  }
 }
 
 function buildWebAppInlineKeyboardRows() {
-  if (!config.telegramWebAppUrl) {
+  const webAppUrl = getTelegramWebAppUrl();
+
+  if (!webAppUrl) {
     return [];
   }
 
-  return [[{ text: BUTTONS.WEB_APP, web_app: { url: config.telegramWebAppUrl } }]];
+  return [[{ text: BUTTONS.WEB_APP, web_app: { url: webAppUrl } }]];
+}
+
+function buildHomeOnlyInlineKeyboard() {
+  return buildWebAppInlineKeyboardRows();
 }
 
 function buildHomeInlineKeyboard(appUser, telegramUserId) {
-  const rows = [
-    [
-      { text: BUTTONS.DEVICES, callback_data: 'm:list:0' },
-      { text: BUTTONS.MY_ID, callback_data: 'm:id' },
-    ],
-    [
-      { text: BUTTONS.SEARCH, callback_data: 'm:search' },
-      { text: BUTTONS.HELP, callback_data: 'm:help' },
-    ],
-  ];
+  const rows = [];
 
   if (hasAdminAccess(telegramUserId, appUser)) {
-    rows.push([
-      { text: BUTTONS.STATS, callback_data: 'm:stats' },
-      { text: BUTTONS.SYNC_SETTINGS, callback_data: 'm:realtime' },
-    ]);
+    rows.push([{ text: BUTTONS.SYNC_SETTINGS, callback_data: 'm:realtime' }]);
   }
 
   rows.push(...buildWebAppInlineKeyboardRows());
@@ -514,6 +525,33 @@ function formatDurationMs(ms) {
   }
 
   return `${hours.toFixed(1)} soat`;
+}
+
+function parseCustomRealtimeIntervalMs(input) {
+  const value = String(input || '').trim().toLowerCase().replace(',', '.');
+
+  if (!value) {
+    throw new Error('Interval kiriting');
+  }
+
+  const match = value.match(/^(\d+(?:\.\d+)?)\s*(h|hr|hour|hours|soat|s|m|min|minute|minutes|daqiqa|daq)?$/i);
+
+  if (!match) {
+    throw new Error('Format noto‘g‘ri. Masalan: 2 soat, 90 daqiqa, 1.5h');
+  }
+
+  const amount = Number.parseFloat(match[1]);
+  const unit = match[2] || 'soat';
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error('Interval musbat son bo‘lishi kerak');
+  }
+
+  if (['m', 'min', 'minute', 'minutes', 'daqiqa', 'daq'].includes(unit)) {
+    return Math.round(amount * 60 * 1000);
+  }
+
+  return Math.round(amount * 60 * 60 * 1000);
 }
 
 function estimateNextRunAt(intervalMs) {
@@ -543,126 +581,67 @@ function buildRealtimeSyncInlineKeyboard() {
 
   const rows = [
     ...intervalRows,
+    [{ text: 'Custom interval', callback_data: 'rt:custom' }],
     [
       { text: 'Hozir sync', callback_data: 'rt:run' },
       { text: 'Yangilash', callback_data: 'rt:refresh' },
     ],
-    [{ text: BUTTONS.HOME, callback_data: 'm:home' }],
   ];
 
   return rows;
+}
+
+function buildRealtimeIntervalPromptInlineKeyboard() {
+  return [];
 }
 
 function buildDevicesInlineKeyboard(devices, page, totalPages) {
-  const rows = devices.map((device) => [
-    {
-      text: `${getStatusTag(device.onlineStatus)} ${device.registrationNo}`,
-      callback_data: `d:view:${page}:${encodeCallbackValue(device.registrationNo)}`,
-    },
-  ]);
-
-  const navigationRow = [];
-
-  if (page > 0) {
-    navigationRow.push({ text: 'Oldingi', callback_data: `m:list:${page - 1}` });
-  }
-
-  navigationRow.push({ text: 'Yangilash', callback_data: `m:list:${page}` });
-
-  if (page < totalPages - 1) {
-    navigationRow.push({ text: 'Keyingi', callback_data: `m:list:${page + 1}` });
-  }
-
-  rows.push(navigationRow);
-  rows.push([
-    { text: BUTTONS.SEARCH, callback_data: 'm:search' },
-    { text: BUTTONS.HOME, callback_data: 'm:home' },
-  ]);
-
-  return rows;
+  return [];
 }
 
 function buildSearchResultInlineKeyboard(devices) {
-  const rows = devices.map((device) => [
-    {
-      text: `${getStatusTag(device.onlineStatus)} ${device.registrationNo}`,
-      callback_data: `d:view:0:${encodeCallbackValue(device.registrationNo)}`,
-    },
-  ]);
-
-  rows.push([
-    { text: BUTTONS.SEARCH, callback_data: 'm:search' },
-    { text: BUTTONS.HOME, callback_data: 'm:home' },
-  ]);
-  return rows;
+  return [];
 }
 
 function buildSearchPromptInlineKeyboard() {
-  return [
-    [{ text: BUTTONS.CANCEL, callback_data: 'm:cancel' }],
-    [{ text: BUTTONS.HOME, callback_data: 'm:home' }],
-  ];
+  return [];
 }
 
 function buildDeviceDetailInlineKeyboard(registrationNo, page) {
-  return [
-    [
-      {
-        text: 'Yangilash',
-        callback_data: `d:refresh:${page}:${encodeCallbackValue(registrationNo)}`,
-      },
-      {
-        text: 'Royxatga qaytish',
-        callback_data: `m:list:${page}`,
-      },
-    ],
-    [
-      { text: BUTTONS.SEARCH, callback_data: 'm:search' },
-      { text: BUTTONS.HOME, callback_data: 'm:home' },
-    ],
-  ];
+  return [];
 }
 
 function buildHomeText(telegramUserId, appUser) {
   const linkedDevices = getDeviceRowsByTelegramId(telegramUserId);
   const role = getEffectiveRole(telegramUserId, appUser);
   const lines = [
-    'Solax bot bosh menyusi',
-    `Rol: ${formatRoleLabel(role)}`,
-    `Telegram ID: ${telegramUserId}`,
-    `Biriktirilgan qurilmalar: ${linkedDevices.length}`,
+    '<b><tg-emoji emoji-id="5843680709926981861">🏠</tg-emoji> Solax bot bosh menyusi</b>',
+    '<tg-emoji emoji-id="5886412370347036129">👤</tg-emoji> '+formatTelegramField('Rol', formatRoleLabel(role)),
+    `<b><tg-emoji emoji-id='5936017305585586269'>🪪</tg-emoji> Telegram ID:</b> ${formatTelegramCode(telegramUserId)}`,
+    `<tg-emoji emoji-id="5967816500415827773">💻</tg-emoji> `+formatTelegramField('Biriktirilgan qurilmalar', linkedDevices.length),
   ];
 
   if (hasAdminAccess(telegramUserId, appUser)) {
     const snapshot = getHealthSnapshot();
-    lines.push(`Jami qurilmalar: ${snapshot.devices.totalDevices || 0}`);
-    lines.push(`Online: ${snapshot.devices.onlineDevices || 0}`);
-    lines.push(`Offline: ${snapshot.devices.offlineDevices || 0}`);
+    lines.push(`<tg-emoji emoji-id="5877318502947229960">💻</tg-emoji> `+formatTelegramField('Jami qurilmalar', snapshot.devices.totalDevices || 0));
+    lines.push(`<tg-emoji emoji-id="5931472654660800739">📊</tg-emoji> `+formatTelegramField('Online', snapshot.devices.onlineDevices || 0));
+    lines.push(`<tg-emoji emoji-id="5933629020301169337">📊</tg-emoji> `+formatTelegramField('Offline', snapshot.devices.offlineDevices || 0));
   }
 
   lines.push('');
-  lines.push('Quyidagi tugmalardan birini tanlang.');
+  lines.push(
+    hasAdminAccess(telegramUserId, appUser)
+      ? '<tg-emoji emoji-id="5778202206922608769">🔄</tg-emoji> Quvvat sync sozlamalari uchun pastdagi tugmadan foydalaning.'
+      : '<tg-emoji emoji-id="5872829476143894491">🚫</tg-emoji> Quvvat sync bo limi faqat adminlar uchun.',
+  );
 
   return lines.join('\n');
 }
 
 function buildWelcomeText(telegramUserId, appUser, displayName) {
   const lines = [
-    `Salom, ${displayName}!`,
-    'Solax bot ishga tushdi.',
-    `Sizning Telegram ID: ${telegramUserId}`,
-    '',
+    `<b><tg-emoji emoji-id='5994750571041525522'>👋</tg-emoji> Salom, <a href="tg://user?id=${telegramUserId}">${escapeTelegramHtml(displayName)}</a> !</b>`,
   ];
-
-  if (hasAdminAccess(telegramUserId, appUser)) {
-    lines.push('Admin panel orqali qurilmalarni boshqarish va foydalanuvchilarga biriktirish mumkin.');
-  } else {
-    lines.push('Qurilma sizga biriktirilgandan keyin bot orqali uni kuzata olasiz.');
-  }
-
-  lines.push('');
-  lines.push('Asosiy boshqaruv inline tugmalar orqali ishlaydi.');
-
   return lines.join('\n');
 }
 
@@ -672,80 +651,33 @@ function buildStartText(telegramUserId, appUser, displayName) {
   );
 }
 
-function buildHelpText(telegramUserId, appUser) {
-  const lines = [
-    'Bot imkoniyatlari:',
-    `/start - botni ishga tushirish`,
-    `/menu - bosh menyu`,
-    `/help - yordam`,
-    `/myid - Telegram ID`,
-    `/devices - qurilmalar royxati`,
-    `/device REG - bitta qurilma`,
-    `/search - qurilma qidirish`,
-    '',
-    'Bot faqat inline tugmalar bilan ishlaydi.',
-  ];
-
-  if (hasAdminAccess(telegramUserId, appUser)) {
-    lines.push(
-      `Inline menyu: ${BUTTONS.DEVICES}, ${BUTTONS.MY_ID}, ${BUTTONS.SEARCH}, ${BUTTONS.HELP}, ${BUTTONS.STATS}, ${BUTTONS.WEB_APP}`,
-    );
-  } else {
-    lines.push(`Inline menyu: ${BUTTONS.DEVICES}, ${BUTTONS.MY_ID}, ${BUTTONS.SEARCH}, ${BUTTONS.HELP}, ${BUTTONS.WEB_APP}`);
-  }
-
-  lines.push('');
-  lines.push('Inline tugmalar orqali royxatni varaqlash, qurilma detallarini ochish va yangilash mumkin.');
-
-  return lines.join('\n');
-}
-
-function buildMyIdText(telegramUserId, appUser) {
-  const linkedDevices = getDeviceRowsByTelegramId(telegramUserId);
-  const role = getEffectiveRole(telegramUserId, appUser);
-  const lines = [
-    `Sizning Telegram ID: ${telegramUserId}`,
-    `Rol: ${formatRoleLabel(role)}`,
-    `Biriktirilgan qurilmalar: ${linkedDevices.length}`,
-    '',
-  ];
-
-  if (hasAdminAccess(telegramUserId, appUser)) {
-    lines.push('Bu ID ni admin paneldagi devicega biriktirish mumkin.');
-  } else {
-    lines.push('Bu ID ni masul xodimga yuboring, shunda device sizga biriktiriladi.');
-  }
-
-  return lines.join('\n');
-}
-
 function buildStatsText() {
   const snapshot = getHealthSnapshot();
   const alerts = getSystemAlertPreview(5);
   const realtimeSync = getSolaxRealtimeSyncState();
   const lines = [
-    'Admin statistika:',
-    `Users jami: ${snapshot.users.totalUsers || 0}`,
-    `Super admin: ${snapshot.users.superAdmins || 0}`,
-    `Admin: ${snapshot.users.admins || 0}`,
-    `Oddiy user: ${snapshot.users.users || 0}`,
-    `Qurilmalar jami: ${snapshot.devices.totalDevices || 0}`,
-    `Online: ${snapshot.devices.onlineDevices || 0}`,
-    `Offline: ${snapshot.devices.offlineDevices || 0}`,
-    `Alertlar jami: ${snapshot.alerts.totalAlerts || 0}`,
-    `Oqilmagan alertlar: ${snapshot.alerts.unreadAlerts || 0}`,
-    `Quvvat sync interval: ${formatDurationMs(realtimeSync.intervalMs)}`,
-    `Keyingi quvvat sync: ${realtimeSync.nextRunAt || '-'}`,
+    '<b>Admin statistika:</b>',
+    formatTelegramField('Users jami', snapshot.users.totalUsers || 0),
+    formatTelegramField('Super admin', snapshot.users.superAdmins || 0),
+    formatTelegramField('Admin', snapshot.users.admins || 0),
+    formatTelegramField('Oddiy user', snapshot.users.users || 0),
+    formatTelegramField('Qurilmalar jami', snapshot.devices.totalDevices || 0),
+    formatTelegramField('Online', snapshot.devices.onlineDevices || 0),
+    formatTelegramField('Offline', snapshot.devices.offlineDevices || 0),
+    formatTelegramField('Alertlar jami', snapshot.alerts.totalAlerts || 0),
+    formatTelegramField('Oqilmagan alertlar', snapshot.alerts.unreadAlerts || 0),
+    formatTelegramField('Quvvat sync interval', formatDurationMs(realtimeSync.intervalMs)),
+    formatTelegramField('Keyingi quvvat sync', realtimeSync.nextRunAt || '-'),
   ];
 
   if (alerts.length > 0) {
     lines.push('');
-    lines.push('Oxirgi alertlar:');
+    lines.push('<b>Oxirgi alertlar:</b>');
     for (const alert of alerts) {
       lines.push(
-        `- ${alert.registrationNo || '-'} | ${alert.type || 'alert'} | ${alert.createdAt || '-'} | ${
-          alert.isRead ? 'read' : 'unread'
-        }`,
+        `- ${formatTelegramCode(alert.registrationNo || '-')} | ${escapeTelegramHtml(alert.type || 'alert')} | ${escapeTelegramHtml(
+          alert.createdAt || '-',
+        )} | ${alert.isRead ? 'read' : 'unread'}`,
       );
     }
   }
@@ -758,26 +690,26 @@ function buildRealtimeSyncText(notice = null) {
   const lastSummary = state.lastSummary;
   const nextRunAt = state.nextRunAt || estimateNextRunAt(state.intervalMs);
   const lines = [
-    'Quvvat sync sozlamalari',
-    `Holat: ${state.enabled ? 'yoqilgan' : 'ochirilgan yoki token yoq'}`,
-    `DBga yozish intervali: ${formatDurationMs(state.intervalMs)}`,
-    `Minimal interval: ${formatDurationMs(state.minIntervalMs)}`,
-    `Keyingi run: ${nextRunAt || '-'}`,
-    `Hozir ishlayaptimi: ${state.isRunning ? 'ha' : 'yoq'}`,
-    `Oxirgi muvaffaqiyat: ${state.lastSuccessAt || '-'}`,
+    '<b><tg-emoji emoji-id="5839380464116175529">✏️</tg-emoji> Quvvat sync sozlamalari</b>',
+    '<tg-emoji emoji-id="5879785854284599288">ℹ️</tg-emoji> '+formatTelegramField('Holat', state.enabled ? 'Yoqilgan' : 'O\'chirilgan yoki token y\'oq'),
+    '<tg-emoji emoji-id="5985616167740379273">⏰</tg-emoji> '+formatTelegramField('DBga yozish intervali', formatDurationMs(state.intervalMs)),
+    '<tg-emoji emoji-id="5900104897885376843">🕓</tg-emoji> '+formatTelegramField('Minimal interval', formatDurationMs(state.minIntervalMs)),
+    '<tg-emoji emoji-id="5839042506024555846">➡️</tg-emoji> '+formatTelegramField('Keyingi run', nextRunAt || '-'),
+    '<tg-emoji emoji-id="5879813604068298387">❗️</tg-emoji> '+formatTelegramField('Hozir ishlayaptimi', state.isRunning ? 'Ha' : 'Yo\'q'),
+    '<tg-emoji emoji-id="5843799474362652262">🔄</tg-emoji> '+formatTelegramField('Oxirgi muvaffaqiyat', state.lastSuccessAt || 'Noma\'lum'),
   ];
 
   if (notice) {
-    lines.unshift(notice, '');
+    lines.unshift(escapeTelegramHtml(notice), '');
   }
 
   if (lastSummary) {
     lines.push('');
-    lines.push('Oxirgi natija:');
-    lines.push(`- processed: ${lastSummary.processed ?? 0}/${lastSummary.totalTargets ?? 0}`);
-    lines.push(`- succeeded: ${lastSummary.succeeded ?? 0}`);
-    lines.push(`- failed: ${lastSummary.failed ?? 0}`);
-    lines.push(`- skipped: ${lastSummary.skipped ?? 0}`);
+    lines.push('<b>Oxirgi natija:</b>');
+    lines.push(`- Qayta ishlandi: ${escapeTelegramHtml(lastSummary.processed ?? 0)}/${escapeTelegramHtml(lastSummary.totalTargets ?? 0)}`);
+    lines.push(`- Muvaffaqiyatli: ${escapeTelegramHtml(lastSummary.succeeded ?? 0)}`);
+    lines.push(`- Muvaffaqiyatsiz: ${escapeTelegramHtml(lastSummary.failed ?? 0)}`);
+    lines.push(`- O'tkazib yuborildi: ${escapeTelegramHtml(lastSummary.skipped ?? 0)}`);
 
     if (lastSummary.quotaLimited) {
       lines.push('- SolaX limitga tushgan');
@@ -785,18 +717,30 @@ function buildRealtimeSyncText(notice = null) {
   }
 
   lines.push('');
-  lines.push('Kerakli intervalni tanlang. Bu qiymat DBga saqlanadi va restartdan keyin ham qoladi.');
+  lines.push('Kerakli intervalni tanlang yoki custom interval kiriting. Bu qiymat DBga saqlanadi va restartdan keyin ham qoladi.');
 
   return lines.join('\n');
+}
+
+function buildRealtimeIntervalPromptText() {
+  const state = getSolaxRealtimeSyncState();
+
+  return [
+    '<b>Custom quvvat sync interval</b>',
+    formatTelegramField('Joriy interval', formatDurationMs(state.intervalMs)),
+    formatTelegramField('Minimal interval', formatDurationMs(state.minIntervalMs)),
+    '',
+    `Interval yuboring. Masalan: ${formatTelegramCode('2 soat')}, ${formatTelegramCode('90 daqiqa')}, ${formatTelegramCode('1.5h')}.`,
+  ].join('\n');
 }
 
 function buildDeviceListText(devices, page, totalPages, title) {
   const start = page * DEVICE_PAGE_SIZE + 1;
   const end = start + devices.length - 1;
   const lines = [
-    title,
-    `Sahifa: ${page + 1}/${Math.max(totalPages, 1)}`,
-    `Korinyapti: ${devices.length > 0 ? `${start}-${end}` : '0'} ta`,
+    `<b>${escapeTelegramHtml(title)}</b>`,
+    formatTelegramField('Sahifa', `${page + 1}/${Math.max(totalPages, 1)}`),
+    formatTelegramField('Ko\'rinyapti', `${devices.length > 0 ? `${start}-${end}` : '0'} ta`),
     '',
   ];
 
@@ -807,11 +751,11 @@ function buildDeviceListText(devices, page, totalPages, title) {
 
   for (const device of devices) {
     const label = device.deviceName || device.plantName || device.userName || 'Nomsiz qurilma';
-    lines.push(`${getStatusTag(device.onlineStatus)} ${device.registrationNo} | ${label}`);
+    lines.push(`${getStatusTag(device.onlineStatus)} ${formatTelegramCode(device.registrationNo)} | ${escapeTelegramHtml(label)}`);
   }
 
   lines.push('');
-  lines.push('Batafsil korish uchun pastdagi tugmalardan foydalaning.');
+  lines.push('Batafsil ko\'rish uchun pastdagi tugmalardan foydalaning.');
 
   return lines.join('\n');
 }
@@ -819,44 +763,52 @@ function buildDeviceListText(devices, page, totalPages, title) {
 function buildDeviceDetailsText(device, insights, telegramUserId, appUser) {
   const telegramIds = parseTelegramIds(device.telegramIds);
   const lines = [
-    `Qurilma: ${device.registrationNo}`,
-    `Holati: ${device.onlineStatus || 'Unknown'}`,
-    `Egasi: ${device.userName || '-'}`,
-    `Plant: ${device.plantName || '-'}`,
-    `Model: ${device.deviceModel || '-'}`,
-    `SN: ${device.deviceSn || '-'}`,
-    `Tracking: ${device.trackingEnabled ? 'yoqilgan' : 'ochirilgan'}`,
-    `Oxirgi tekshiruv: ${device.lastCheckedAt || '-'}`,
-    `Oxirgi online vaqti: ${device.lastSeenAt || '-'}`,
-    `TG ID: ${telegramIds.length > 0 ? telegramIds.join(', ') : '-'}`,
+    `<b>Qurilma:</b> ${formatTelegramCode(device.registrationNo)}`,
+    formatTelegramField('Holati', device.onlineStatus || 'Noma\'lum'),
+    formatTelegramField('Egasi', device.userName || 'Noma\'lum'),
+    formatTelegramField('Plant', device.plantName || 'Noma\'lum'),
+    formatTelegramField('Model', device.deviceModel || 'Noma\'lum'),
+    `<b>SN:</b> ${formatTelegramCode(device.deviceSn || 'Noma\'lum')}`,
+    formatTelegramField('Tracking', device.trackingEnabled ? 'Yoqilgan' : 'O\'chirilgan'),
+    formatTelegramField('Oxirgi tekshiruv', device.lastCheckedAt || 'Noma\'lum'),
+    formatTelegramField('Oxirgi online vaqti', device.lastSeenAt || 'Noma\'lum'),
+    `<b>TG ID:</b> ${telegramIds.length > 0 ? telegramIds.map(formatTelegramCode).join(', ') : 'Noma\'lum'}`,
     '',
-    `History yozuvlari: ${insights.historyCount}`,
-    `Oxirgi snapshot: ${insights.latestSnapshotMinute || '-'}`,
+    formatTelegramField('History yozuvlari', insights.historyCount),
+    formatTelegramField('Oxirgi snapshot', insights.latestSnapshotMinute || 'Noma\'lum'),
   ];
 
   if (insights.latestDaily) {
     lines.push(
-      `Kunlik stat: ${insights.latestDaily.date} | Today=${insights.latestDaily.yieldToday ?? 0} | Total=${
-        insights.latestDaily.yieldTotal ?? 0
-      } | Power=${insights.latestDaily.acPower ?? 0}`,
+      `<b>Kunlik stat:</b> ${escapeTelegramHtml(insights.latestDaily.date)} | Today=${escapeTelegramHtml(
+        insights.latestDaily.yieldToday ?? 0,
+      )} | Total=${escapeTelegramHtml(insights.latestDaily.yieldTotal ?? 0)} | Power=${escapeTelegramHtml(
+        insights.latestDaily.acPower ?? 0,
+      )}`,
     );
   }
 
   if (insights.latestMonthly) {
     lines.push(
-      `Oylik stat: ${insights.latestMonthly.month} | Total=${insights.latestMonthly.totalYield ?? 0} | Avg=${
-        insights.latestMonthly.avgYield ?? 0
-      } | Max=${insights.latestMonthly.maxYield ?? 0}`,
+      `<b>Oylik stat:</b> ${escapeTelegramHtml(insights.latestMonthly.month)} | Total=${escapeTelegramHtml(
+        insights.latestMonthly.totalYield ?? 0,
+      )} | Avg=${escapeTelegramHtml(insights.latestMonthly.avgYield ?? 0)} | Max=${escapeTelegramHtml(
+        insights.latestMonthly.maxYield ?? 0,
+      )}`,
     );
   }
 
-  lines.push(`Alertlar: ${insights.totalAlerts} jami, ${insights.unreadAlerts} oqilmagan`);
+  lines.push(formatTelegramField('Alertlar', `${insights.totalAlerts} jami, ${insights.unreadAlerts} oqilmagan`));
 
   if (insights.recentAlerts.length > 0) {
     lines.push('');
-    lines.push('Oxirgi alertlar:');
+    lines.push('<b>Oxirgi alertlar:</b>');
     for (const alert of insights.recentAlerts) {
-      lines.push(`- ${alert.createdAt || '-'} | ${alert.type || 'alert'} | ${alert.message || '-'}`);
+      lines.push(
+        `- ${escapeTelegramHtml(alert.createdAt || '-')} | ${escapeTelegramHtml(alert.type || 'alert')} | ${escapeTelegramHtml(
+          alert.message || '-',
+        )}`,
+      );
     }
   }
 
@@ -916,11 +868,17 @@ async function answerCallbackQuery(callbackQueryId, text = '', { showAlert = fal
 }
 
 export async function sendTelegramMessage(chatId, text, extra = {}) {
+  const payload = withReplyMessagePayload(chatId, extra);
+
+  if (!hasOwn(payload, 'parse_mode')) {
+    payload.parse_mode = TELEGRAM_PARSE_MODE;
+  }
+
   return callTelegram('sendMessage', {
     chat_id: chatId,
     text,
     disable_web_page_preview: true,
-    ...withReplyMessagePayload(chatId, extra),
+    ...payload,
   });
 }
 
@@ -973,6 +931,7 @@ async function editTelegramMessage(chatId, messageId, text, inlineKeyboardRows =
       chat_id: chatId,
       message_id: messageId,
       text,
+      parse_mode: TELEGRAM_PARSE_MODE,
       disable_web_page_preview: true,
       reply_markup: buildInlineKeyboard(inlineKeyboardRows),
     });
@@ -987,7 +946,7 @@ async function editTelegramMessage(chatId, messageId, text, inlineKeyboardRows =
 
 function buildBlockedUserText() {
   return [
-    'Akkount bloklangan.',
+    '<b>Akkount bloklangan.</b>',
     'Botdan foydalanish uchun admin bilan boglaning.',
   ].join('\n');
 }
@@ -1052,7 +1011,7 @@ async function sendDevicesMenu(chatId, telegramUserId, appUser, page = 0) {
     ? `Qurilmalar royxati (${accessibleDevices.length} ta)`
     : areDevicesVisibleToAll()
       ? `Barcha qurilmalar (${accessibleDevices.length} ta)`
-    : `Sizga biriktirilgan qurilmalar (${accessibleDevices.length} ta)`;
+      : `Sizga biriktirilgan qurilmalar (${accessibleDevices.length} ta)`;
 
   return sendTelegramMessage(chatId, buildDeviceListText(pageDevices, safePage, totalPages, title), {
     reply_markup: buildInlineKeyboard(buildDevicesInlineKeyboard(pageDevices, safePage, totalPages)),
@@ -1071,7 +1030,7 @@ async function editDevicesMenu(callbackQuery, telegramUserId, appUser, page = 0)
     ? `Qurilmalar royxati (${accessibleDevices.length} ta)`
     : areDevicesVisibleToAll()
       ? `Barcha qurilmalar (${accessibleDevices.length} ta)`
-    : `Sizga biriktirilgan qurilmalar (${accessibleDevices.length} ta)`;
+      : `Sizga biriktirilgan qurilmalar (${accessibleDevices.length} ta)`;
 
   return editTelegramMessage(
     callbackQuery.message.chat.id,
@@ -1085,7 +1044,7 @@ async function sendDeviceDetails(chatId, telegramUserId, appUser, registrationNo
   const device = getDeviceByRegistrationNo(registrationNo);
 
   if (!device || !canAccessDevice(telegramUserId, device, appUser)) {
-    return sendTelegramMessage(chatId, 'Qurilma topilmadi yoki sizda unga ruxsat yoq.');
+    return sendTelegramMessage(chatId, 'Qurilma topilmadi yoki sizda unga ruxsat yo\'q.');
   }
 
   const insights = getDeviceInsights(device.registrationNo);
@@ -1106,8 +1065,8 @@ async function editDeviceDetails(callbackQuery, telegramUserId, appUser, registr
     return editTelegramMessage(
       callbackQuery.message.chat.id,
       callbackQuery.message.message_id,
-      'Qurilma topilmadi yoki sizda unga ruxsat yoq.',
-      [[{ text: BUTTONS.HOME, callback_data: 'm:home' }]],
+      'Qurilma topilmadi yoki sizda unga ruxsat yo\'q.',
+      [],
     );
   }
 
@@ -1128,7 +1087,6 @@ async function sendStatsMenu(chatId, telegramUserId, appUser) {
 
   return sendInlinePanel(chatId, buildStatsText(), [
     [{ text: BUTTONS.SYNC_SETTINGS, callback_data: 'm:realtime' }],
-    [{ text: BUTTONS.HOME, callback_data: 'm:home' }],
   ]);
 }
 
@@ -1138,7 +1096,7 @@ async function editStatsMenu(callbackQuery, telegramUserId, appUser) {
       callbackQuery.message.chat.id,
       callbackQuery.message.message_id,
       'Bu bo lim faqat adminlar uchun.',
-      [[{ text: BUTTONS.HOME, callback_data: 'm:home' }]],
+      [],
     );
   }
 
@@ -1146,10 +1104,7 @@ async function editStatsMenu(callbackQuery, telegramUserId, appUser) {
     callbackQuery.message.chat.id,
     callbackQuery.message.message_id,
     buildStatsText(),
-    [
-      [{ text: BUTTONS.SYNC_SETTINGS, callback_data: 'm:realtime' }],
-      [{ text: BUTTONS.HOME, callback_data: 'm:home' }],
-    ],
+    [[{ text: BUTTONS.SYNC_SETTINGS, callback_data: 'm:realtime' }]],
   );
 }
 
@@ -1179,15 +1134,77 @@ async function editRealtimeSyncMenu(callbackQuery, telegramUserId, appUser, noti
   );
 }
 
+async function promptRealtimeIntervalInput(chatId, telegramUserId, appUser) {
+  if (!hasAdminAccess(telegramUserId, appUser)) {
+    return sendInlinePanel(chatId, 'Bu bo lim faqat adminlar uchun.', buildHomeOnlyInlineKeyboard());
+  }
+
+  setUserSession(telegramUserId, { mode: 'realtime_interval' });
+
+  return sendInlinePanel(chatId, buildRealtimeIntervalPromptText(), buildRealtimeIntervalPromptInlineKeyboard());
+}
+
+async function editRealtimeIntervalPrompt(callbackQuery, telegramUserId, appUser) {
+  if (!hasAdminAccess(telegramUserId, appUser)) {
+    return editTelegramMessage(
+      callbackQuery.message.chat.id,
+      callbackQuery.message.message_id,
+      'Bu bo lim faqat adminlar uchun.',
+      buildHomeOnlyInlineKeyboard(),
+    );
+  }
+
+  setUserSession(telegramUserId, { mode: 'realtime_interval' });
+
+  return editTelegramMessage(
+    callbackQuery.message.chat.id,
+    callbackQuery.message.message_id,
+    buildRealtimeIntervalPromptText(),
+    buildRealtimeIntervalPromptInlineKeyboard(),
+  );
+}
+
+async function handleRealtimeIntervalInput(message, appUser, input) {
+  if (!hasAdminAccess(message.from.id, appUser)) {
+    clearUserSession(message.from.id);
+    return sendInlinePanel(message.chat.id, 'Bu bo lim faqat adminlar uchun.', buildHomeOnlyInlineKeyboard());
+  }
+
+  try {
+    const intervalMs = parseCustomRealtimeIntervalMs(input);
+    const nextState = setSolaxRealtimeSyncIntervalMs(intervalMs, {
+      changedBy: message.from.id,
+    });
+
+    clearUserSession(message.from.id);
+    return sendInlinePanel(
+      message.chat.id,
+      buildRealtimeSyncText(`Interval yangilandi: ${formatDurationMs(nextState.intervalMs)}`),
+      buildRealtimeSyncInlineKeyboard(),
+    );
+  } catch (error) {
+    setUserSession(message.from.id, { mode: 'realtime_interval' });
+    return sendInlinePanel(
+      message.chat.id,
+      [
+        `<b>Interval saqlanmadi:</b> ${escapeTelegramHtml(error.message)}`,
+        '',
+        buildRealtimeIntervalPromptText(),
+      ].join('\n'),
+      buildRealtimeIntervalPromptInlineKeyboard(),
+    );
+  }
+}
+
 function notifyRealtimeSyncResult(chatId, summary) {
   return sendTelegramMessage(
     chatId,
     [
-      'Quvvat sync yakunlandi.',
-      `Processed: ${summary.processed ?? 0}/${summary.totalTargets ?? 0}`,
-      `Succeeded: ${summary.succeeded ?? 0}`,
-      `Failed: ${summary.failed ?? 0}`,
-      `Skipped: ${summary.skipped ?? 0}`,
+      '<b>Quvvat sync yakunlandi.</b>',
+      `Processed: ${escapeTelegramHtml(summary.processed ?? 0)}/${escapeTelegramHtml(summary.totalTargets ?? 0)}`,
+      `Succeeded: ${escapeTelegramHtml(summary.succeeded ?? 0)}`,
+      `Failed: ${escapeTelegramHtml(summary.failed ?? 0)}`,
+      `Skipped: ${escapeTelegramHtml(summary.skipped ?? 0)}`,
       summary.quotaLimited ? 'SolaX limitga tushgan.' : null,
     ]
       .filter(Boolean)
@@ -1227,7 +1244,7 @@ async function handleSearchQuery(message, appUser, query) {
     setUserSession(message.from.id, { mode: 'device_search' });
     return sendInlinePanel(
       message.chat.id,
-      `Qidiruv bo yicha natija topilmadi: ${query}`,
+      `Qidiruv bo yicha natija topilmadi: ${formatTelegramCode(query)}`,
       buildSearchPromptInlineKeyboard(),
     );
   }
@@ -1241,8 +1258,8 @@ async function handleSearchQuery(message, appUser, query) {
   return sendTelegramMessage(
     message.chat.id,
     [
-      `Qidiruv natijalari (${results.length} ta):`,
-      ...results.map((device) => `${getStatusTag(device.onlineStatus)} ${device.registrationNo}`),
+      `<b>Qidiruv natijalari (${results.length} ta):</b>`,
+      ...results.map((device) => `${getStatusTag(device.onlineStatus)} ${formatTelegramCode(device.registrationNo)}`),
     ].join('\n'),
     {
       reply_markup: buildInlineKeyboard(buildSearchResultInlineKeyboard(results)),
@@ -1294,56 +1311,9 @@ async function handleTextShortcut(message, appUser) {
     return true;
   }
 
-  if (text === BUTTONS.DEVICES) {
-    clearUserSession(message.from.id);
-    await sendDevicesMenu(message.chat.id, message.from.id, appUser, 0);
-    return true;
-  }
-
-  if (text === BUTTONS.MY_ID) {
-    clearUserSession(message.from.id);
-    await sendInlinePanel(
-      message.chat.id,
-      buildMyIdText(message.from.id, appUser),
-      buildHomeInlineKeyboard(appUser, message.from.id),
-    );
-    return true;
-  }
-
-  if (text === BUTTONS.HELP) {
-    clearUserSession(message.from.id);
-    await sendInlinePanel(
-      message.chat.id,
-      buildHelpText(message.from.id, appUser),
-      buildHomeInlineKeyboard(appUser, message.from.id),
-    );
-    return true;
-  }
-
-  if (text === BUTTONS.SEARCH) {
-    await promptDeviceSearch(message.chat.id, message.from.id, appUser);
-    return true;
-  }
-
-  if (text === BUTTONS.STATS) {
-    clearUserSession(message.from.id);
-    await sendStatsMenu(message.chat.id, message.from.id, appUser);
-    return true;
-  }
-
   if (text === BUTTONS.SYNC_SETTINGS) {
     clearUserSession(message.from.id);
     await sendRealtimeSyncMenu(message.chat.id, message.from.id, appUser);
-    return true;
-  }
-
-  if (text === BUTTONS.CANCEL) {
-    clearUserSession(message.from.id);
-    await sendInlinePanel(
-      message.chat.id,
-      'Joriy amal bekor qilindi.',
-      buildHomeInlineKeyboard(appUser, message.from.id),
-    );
     return true;
   }
 
@@ -1356,58 +1326,18 @@ async function handleCommand(message, appUser, parsedCommand) {
       clearUserSession(message.from.id);
       await sendHomeMenu(message.chat.id, message.from.id, appUser, { includeGreeting: true });
       return true;
-    case 'menu':
-      clearUserSession(message.from.id);
-      await sendHomeMenu(message.chat.id, message.from.id, appUser);
-      return true;
-    case 'help':
-      clearUserSession(message.from.id);
-      await sendInlinePanel(
-        message.chat.id,
-        buildHelpText(message.from.id, appUser),
-        buildHomeInlineKeyboard(appUser, message.from.id),
-      );
-      return true;
-    case 'myid':
-      clearUserSession(message.from.id);
-      await sendInlinePanel(
-        message.chat.id,
-        buildMyIdText(message.from.id, appUser),
-        buildHomeInlineKeyboard(appUser, message.from.id),
-      );
-      return true;
-    case 'devices':
-      clearUserSession(message.from.id);
-      await sendDevicesMenu(message.chat.id, message.from.id, appUser, 0);
-      return true;
-    case 'device':
-      clearUserSession(message.from.id);
-      if (!parsedCommand.args) {
-        await sendInlinePanel(
-          message.chat.id,
-          'Foydalanish: /device REGRAQAM',
-          buildHomeInlineKeyboard(appUser, message.from.id),
-        );
-        return true;
-      }
-      await sendDeviceDetails(message.chat.id, message.from.id, appUser, parsedCommand.args, 0);
-      return true;
-    case 'search':
-      await promptDeviceSearch(message.chat.id, message.from.id, appUser);
-      return true;
-    case 'stats':
-      clearUserSession(message.from.id);
-      await sendStatsMenu(message.chat.id, message.from.id, appUser);
-      return true;
     case 'sync':
     case 'realtime':
       clearUserSession(message.from.id);
       await sendRealtimeSyncMenu(message.chat.id, message.from.id, appUser);
       return true;
+    case 'interval':
+      await promptRealtimeIntervalInput(message.chat.id, message.from.id, appUser);
+      return true;
     default:
       await sendInlinePanel(
         message.chat.id,
-        `Noma lum buyruq: /${parsedCommand.command}\n/help ni yuboring.`,
+        `Noma lum buyruq: /${escapeTelegramHtml(parsedCommand.command)}`,
         buildHomeInlineKeyboard(appUser, message.from.id),
       );
       return true;
@@ -1441,6 +1371,11 @@ async function handleIncomingMessage(message) {
     }
 
     const session = getUserSession(message.from.id);
+    if (session?.mode === 'realtime_interval') {
+      await handleRealtimeIntervalInput(message, appUser, text);
+      return;
+    }
+
     if (session?.mode === 'device_search') {
       await handleSearchQuery(message, appUser, text);
       return;
@@ -1450,7 +1385,7 @@ async function handleIncomingMessage(message) {
       message.chat.id,
       [
         'Xabar qabul qilindi, lekin men uni buyruq sifatida tani olmadim.',
-        'Inline tugmalardan foydalaning yoki /help ni yuboring.',
+        'Quvvat sync uchun /sync ni yuboring.',
       ].join('\n'),
       buildHomeInlineKeyboard(appUser, message.from.id),
     );
@@ -1473,48 +1408,6 @@ async function handleCallbackQuery(callbackQuery) {
   try {
     if (parsed.group === 'm') {
       switch (parsed.action) {
-        case 'home':
-          clearUserSession(callbackQuery.from.id);
-          await editHomeMenu(callbackQuery, callbackQuery.from.id, appUser);
-          await answerCallbackQuery(callbackQuery.id, 'Bosh menyu');
-          return;
-        case 'help':
-          await editTelegramMessage(
-            callbackQuery.message.chat.id,
-            callbackQuery.message.message_id,
-            buildHelpText(callbackQuery.from.id, appUser),
-            buildHomeInlineKeyboard(appUser, callbackQuery.from.id),
-          );
-          await answerCallbackQuery(callbackQuery.id, 'Yordam');
-          return;
-        case 'id':
-          await editTelegramMessage(
-            callbackQuery.message.chat.id,
-            callbackQuery.message.message_id,
-            buildMyIdText(callbackQuery.from.id, appUser),
-            buildHomeInlineKeyboard(appUser, callbackQuery.from.id),
-          );
-          await answerCallbackQuery(callbackQuery.id, 'Telegram ID');
-          return;
-        case 'list': {
-          const page = Number.parseInt(parsed.parts[2] || '0', 10) || 0;
-          await editDevicesMenu(callbackQuery, callbackQuery.from.id, appUser, page);
-          await answerCallbackQuery(callbackQuery.id, `Sahifa ${page + 1}`);
-          return;
-        }
-        case 'search':
-          await editSearchPrompt(callbackQuery, callbackQuery.from.id);
-          await answerCallbackQuery(callbackQuery.id, 'Qidiruv rejimi yoqildi');
-          return;
-        case 'cancel':
-          clearUserSession(callbackQuery.from.id);
-          await editHomeMenu(callbackQuery, callbackQuery.from.id, appUser);
-          await answerCallbackQuery(callbackQuery.id, 'Bekor qilindi');
-          return;
-        case 'stats':
-          await editStatsMenu(callbackQuery, callbackQuery.from.id, appUser);
-          await answerCallbackQuery(callbackQuery.id, 'Admin statistika');
-          return;
         case 'realtime':
           await editRealtimeSyncMenu(callbackQuery, callbackQuery.from.id, appUser);
           await answerCallbackQuery(callbackQuery.id, 'Quvvat sync sozlamalari');
@@ -1550,39 +1443,25 @@ async function handleCallbackQuery(callbackQuery) {
           await editRealtimeSyncMenu(callbackQuery, callbackQuery.from.id, appUser);
           await answerCallbackQuery(callbackQuery.id, 'Yangilandi');
           return;
+        case 'custom':
+          await editRealtimeIntervalPrompt(callbackQuery, callbackQuery.from.id, appUser);
+          await answerCallbackQuery(callbackQuery.id, 'Custom interval');
+          return;
         case 'run': {
           await answerCallbackQuery(callbackQuery.id, 'Manual sync boshlandi');
           await editRealtimeSyncMenu(callbackQuery, callbackQuery.from.id, appUser, 'Manual sync boshlandi.');
           runSolaxRealtimeSyncNow('telegram-bot')
             .then((summary) => notifyRealtimeSyncResult(callbackQuery.message.chat.id, summary))
             .catch((error) =>
-              sendTelegramMessage(callbackQuery.message.chat.id, `Quvvat sync xatosi: ${error.message}`).catch(
-                () => null,
-              ),
+              sendTelegramMessage(
+                callbackQuery.message.chat.id,
+                `<b>Quvvat sync xatosi:</b> ${escapeTelegramHtml(error.message)}`,
+              ).catch(() => null),
             );
           return;
         }
         default:
           await answerCallbackQuery(callbackQuery.id, 'Noma lum sync amali');
-          return;
-      }
-    }
-
-    if (parsed.group === 'd') {
-      const page = Number.parseInt(parsed.parts[2] || '0', 10) || 0;
-      const registrationNo = decodeCallbackValue(parsed.parts[3] || '');
-
-      switch (parsed.action) {
-        case 'view':
-          await editDeviceDetails(callbackQuery, callbackQuery.from.id, appUser, registrationNo, page);
-          await answerCallbackQuery(callbackQuery.id, registrationNo);
-          return;
-        case 'refresh':
-          await editDeviceDetails(callbackQuery, callbackQuery.from.id, appUser, registrationNo, page);
-          await answerCallbackQuery(callbackQuery.id, 'Yangilandi');
-          return;
-        default:
-          await answerCallbackQuery(callbackQuery.id, 'Noma lum qurilma amali');
           return;
       }
     }

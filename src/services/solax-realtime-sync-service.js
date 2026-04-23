@@ -1,13 +1,17 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { config } from '../config.js';
-import { listRealtimeSyncTargets, saveDeviceRealtimeStats } from './device-service.js';
+import {
+  getRealtimeSyncTargetByRegistrationNo,
+  listRealtimeSyncTargets,
+  saveDeviceRealtimeStats,
+} from './device-service.js';
 import { getSetting, setSetting } from './settings-service.js';
 
 const SOLAX_REALTIME_SOURCE = 'solax-realtime-api';
 const MAX_REPORTED_ERRORS = 20;
 const SOLAX_REALTIME_INTERVAL_SETTING_KEY = 'solaxRealtimeSyncIntervalMs';
-const MIN_SOLAX_REALTIME_INTERVAL_MS = 60 * 60 * 1000;
+const MIN_SOLAX_REALTIME_INTERVAL_MS = 60 * 1000;
 const SCHEDULE_RECHECK_MS = 60 * 1000;
 
 let schedulerStarted = false;
@@ -49,7 +53,7 @@ function normaliseRealtimeIntervalMs(value) {
   }
 
   if (parsed < MIN_SOLAX_REALTIME_INTERVAL_MS) {
-    throw new Error('Realtime sync interval kamida 1 soat bo\'lishi kerak');
+    throw new Error('Realtime sync interval kamida 1 daqiqa bo\'lishi kerak');
   }
 
   return parsed;
@@ -62,10 +66,16 @@ function getRealtimeIntervalMs() {
   return intervalMs;
 }
 
-function buildRealtimeUrl(deviceSn) {
+function buildRealtimeUrl(registrationNo) {
+  const cleanRegistrationNo = String(registrationNo || '').trim();
+
+  if (!cleanRegistrationNo) {
+    throw new Error('registrationNo bosh');
+  }
+
   const url = new URL(config.solaxRealtimeApiUrl);
   url.searchParams.set('tokenId', config.solaxRealtimeTokenId);
-  url.searchParams.set('sn', deviceSn);
+  url.searchParams.set('sn', cleanRegistrationNo);
   return url;
 }
 
@@ -105,6 +115,19 @@ function getDateField(source, candidateKeys) {
   return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
 }
 
+function inferOnlineStatus(uploadedAt) {
+  if (!uploadedAt) {
+    return 'Unknown';
+  }
+
+  const uploadedAtMs = new Date(uploadedAt).getTime();
+  if (!Number.isFinite(uploadedAtMs)) {
+    return 'Unknown';
+  }
+
+  return Date.now() - uploadedAtMs <= config.solaxRealtimeOnlineThresholdMs ? 'Online' : 'Offline';
+}
+
 function parseRealtimePayload(payload) {
   if (!payload || typeof payload !== 'object') {
     throw new Error('SolaX realtime javobi bosh yoki noto\'g\'ri');
@@ -126,6 +149,18 @@ function parseRealtimePayload(payload) {
     throw new Error(result.exception || `SolaX API xatosi: code=${result.code ?? 'unknown'}`);
   }
 
+  const uploadedAt = getDateField(result, [
+    'uploadTime',
+    'uploadtime',
+    'utcDateTime',
+    'utcdatetime',
+    'utcTime',
+    'updateTime',
+    'updatedAt',
+    'time',
+    'timestamp',
+    'lastUpdateTime',
+  ]);
   const realtime = {
     acPower: getNumberField(result, [
       'acPower',
@@ -153,15 +188,8 @@ function parseRealtimePayload(payload) {
       'eTotal',
       'energyTotal',
     ]),
-    uploadedAt: getDateField(result, [
-      'uploadTime',
-      'uploadtime',
-      'updateTime',
-      'updatedAt',
-      'time',
-      'timestamp',
-      'lastUpdateTime',
-    ]),
+    uploadedAt,
+    onlineStatus: inferOnlineStatus(uploadedAt),
   };
 
   if (realtime.acPower === null && realtime.yieldToday === null && realtime.yieldTotal === null) {
@@ -211,6 +239,103 @@ function pushSummaryError(summary, target, error) {
   });
 }
 
+function normaliseRegistrationNos(registrationNos) {
+  return [
+    ...new Set(
+      (Array.isArray(registrationNos) ? registrationNos : [registrationNos])
+        .map((item) => String(item || '').trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+async function syncRealtimeTarget(target, summary, syncedAt) {
+  try {
+    const realtime = await fetchRealtimeInfo(target.registrationNo);
+    saveDeviceRealtimeStats({
+      registrationNo: target.registrationNo,
+      deviceSn: target.deviceSn,
+      collectedAt: syncedAt,
+      uploadedAt: realtime.uploadedAt,
+      acPower: realtime.acPower,
+      yieldToday: realtime.yieldToday,
+      yieldTotal: realtime.yieldTotal,
+      onlineStatus: realtime.onlineStatus,
+      source: SOLAX_REALTIME_SOURCE,
+    });
+    summary.succeeded += 1;
+  } catch (error) {
+    summary.failed += 1;
+    pushSummaryError(summary, target, error);
+
+    if (isQuotaError(error)) {
+      summary.quotaLimited = true;
+      throw error;
+    }
+  } finally {
+    summary.processed += 1;
+  }
+}
+
+async function executeTargetsSync(trigger, targets, { requestedTargets = targets.length, skipped = 0 } = {}) {
+  const startedAt = new Date().toISOString();
+  const summary = {
+    trigger,
+    source: SOLAX_REALTIME_SOURCE,
+    syncedAt: startedAt,
+    intervalMs: getRealtimeIntervalMs(),
+    requestedTargets,
+    totalTargets: targets.length,
+    processed: 0,
+    succeeded: 0,
+    failed: 0,
+    skipped,
+    quotaLimited: false,
+    errors: [],
+  };
+
+  schedulerState.isRunning = true;
+  schedulerState.lastRunAt = startedAt;
+
+  try {
+    for (let index = 0; index < targets.length; index += 1) {
+      const target = targets[index];
+
+      try {
+        await syncRealtimeTarget(target, summary, startedAt);
+      } catch (error) {
+        if (isQuotaError(error)) {
+          summary.skipped += targets.length - index - 1;
+          break;
+        }
+      }
+
+      if (config.solaxRealtimeRequestDelayMs > 0 && index < targets.length - 1) {
+        await delay(config.solaxRealtimeRequestDelayMs);
+      }
+    }
+
+    schedulerState.lastSuccessAt = startedAt;
+    schedulerState.lastErrorAt = null;
+    schedulerState.lastError = null;
+    schedulerState.lastSummary = summary;
+
+    console.log(
+      `[solax-realtime] ${trigger}: targets=${summary.totalTargets}, processed=${summary.processed}, succeeded=${summary.succeeded}, failed=${summary.failed}, skipped=${summary.skipped}`,
+    );
+
+    return summary;
+  } catch (error) {
+    schedulerState.lastErrorAt = startedAt;
+    schedulerState.lastError = error.message;
+    console.error('[solax-realtime] Sync ishlamadi', error);
+    throw error;
+  } finally {
+    schedulerState.isRunning = false;
+    activeRunPromise = null;
+  }
+}
+
 async function executeSync(trigger) {
   if (!schedulerState.enabled) {
     return {
@@ -225,80 +350,35 @@ async function executeSync(trigger) {
   }
 
   activeRunPromise = (async () => {
-    const startedAt = new Date().toISOString();
     const targets = listRealtimeSyncTargets();
-    const summary = {
-      trigger,
-      source: SOLAX_REALTIME_SOURCE,
-      syncedAt: startedAt,
-      intervalMs: getRealtimeIntervalMs(),
-      totalTargets: targets.length,
-      processed: 0,
-      succeeded: 0,
-      failed: 0,
-      skipped: 0,
-      quotaLimited: false,
-      errors: [],
-    };
-
-    schedulerState.isRunning = true;
-    schedulerState.lastRunAt = startedAt;
-
-    try {
-      for (let index = 0; index < targets.length; index += 1) {
-        const target = targets[index];
-
-        try {
-          const realtime = await fetchRealtimeInfo(target.registrationNo);
-          saveDeviceRealtimeStats({
-            registrationNo: target.registrationNo,
-            deviceSn: target.deviceSn,
-            collectedAt: startedAt,
-            uploadedAt: realtime.uploadedAt,
-            acPower: realtime.acPower,
-            yieldToday: realtime.yieldToday,
-            yieldTotal: realtime.yieldTotal,
-            source: SOLAX_REALTIME_SOURCE,
-          });
-          summary.succeeded += 1;
-        } catch (error) {
-          summary.failed += 1;
-          pushSummaryError(summary, target, error);
-
-          if (isQuotaError(error)) {
-            summary.quotaLimited = true;
-            summary.skipped = targets.length - index - 1;
-            break;
-          }
-        }
-
-        summary.processed += 1;
-
-        if (config.solaxRealtimeRequestDelayMs > 0 && index < targets.length - 1) {
-          await delay(config.solaxRealtimeRequestDelayMs);
-        }
-      }
-
-      schedulerState.lastSuccessAt = startedAt;
-      schedulerState.lastErrorAt = null;
-      schedulerState.lastError = null;
-      schedulerState.lastSummary = summary;
-
-      console.log(
-        `[solax-realtime] ${trigger}: targets=${summary.totalTargets}, processed=${summary.processed}, succeeded=${summary.succeeded}, failed=${summary.failed}, skipped=${summary.skipped}`,
-      );
-
-      return summary;
-    } catch (error) {
-      schedulerState.lastErrorAt = startedAt;
-      schedulerState.lastError = error.message;
-      console.error('[solax-realtime] Sync ishlamadi', error);
-      throw error;
-    } finally {
-      schedulerState.isRunning = false;
-      activeRunPromise = null;
-    }
+    return executeTargetsSync(trigger, targets);
   })();
+
+  return activeRunPromise;
+}
+
+async function executeSelectedSync(trigger, registrationNos) {
+  if (!schedulerState.enabled) {
+    return {
+      trigger,
+      enabled: false,
+      message: 'SolaX realtime sync o\'chiq yoki token sozlanmagan',
+    };
+  }
+
+  if (activeRunPromise) {
+    await activeRunPromise.catch(() => null);
+  }
+
+  const cleanRegistrationNos = normaliseRegistrationNos(registrationNos);
+  const targets = cleanRegistrationNos
+    .map((registrationNo) => getRealtimeSyncTargetByRegistrationNo(registrationNo))
+    .filter(Boolean);
+
+  activeRunPromise = executeTargetsSync(trigger, targets, {
+    requestedTargets: cleanRegistrationNos.length,
+    skipped: cleanRegistrationNos.length - targets.length,
+  });
 
   return activeRunPromise;
 }
@@ -349,6 +429,20 @@ export async function runSolaxRealtimeSyncNow(trigger = 'manual') {
   }
 
   return result;
+}
+
+export async function runSolaxRealtimeSyncForDevices(registrationNos, trigger = 'device-created') {
+  const result = await executeSelectedSync(trigger, registrationNos);
+
+  if (schedulerStarted) {
+    scheduleNextRun();
+  }
+
+  return result;
+}
+
+export function runSolaxRealtimeSyncForDevice(registrationNo, trigger = 'device-created') {
+  return runSolaxRealtimeSyncForDevices([registrationNo], trigger);
 }
 
 export function setSolaxRealtimeSyncIntervalMs(intervalMs, { changedBy = null } = {}) {

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { config } from '../config.js';
 import { syncDevicesSnapshot } from './device-service.js';
+import { runSolaxRealtimeSyncForDevices } from './solax-realtime-sync-service.js';
 
 const DEVICE_SYNC_SOURCE = 'devices-json';
 
@@ -90,6 +91,14 @@ async function executeSync(trigger) {
       schedulerState.lastErrorAt = null;
       schedulerState.lastError = null;
       schedulerState.lastSummary = enrichedSummary;
+
+      if (enrichedSummary.insertedRegistrationNos.length > 0) {
+        runSolaxRealtimeSyncForDevices(enrichedSummary.insertedRegistrationNos, `${trigger}-new-devices`).catch(
+          (error) => {
+            console.error('[device-sync] Yangi device realtime sync xatosi:', error);
+          },
+        );
+      }
 
       console.log(
         `[device-sync] ${trigger}: processed=${summary.processed}, inserted=${summary.inserted}, updated=${summary.updated}, history=${summary.historyInserted}, failed=${summary.failed}`,

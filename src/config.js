@@ -75,13 +75,17 @@ export const config = Object.freeze({
   ).trim(),
   solaxRealtimeSyncEnabled: toBool(process.env.SOLAX_REALTIME_SYNC_ENABLED, true),
   solaxRealtimeSyncIntervalMs: Math.max(
-    3600000,
+    60000,
     toInt(process.env.SOLAX_REALTIME_SYNC_INTERVAL_MS, 3600000),
   ),
   solaxRealtimeRequestDelayMs: Math.max(0, toInt(process.env.SOLAX_REALTIME_REQUEST_DELAY_MS, 6500)),
   solaxRealtimeRequestTimeoutMs: Math.max(
     5000,
     toInt(process.env.SOLAX_REALTIME_REQUEST_TIMEOUT_MS, 15000),
+  ),
+  solaxRealtimeOnlineThresholdMs: Math.max(
+    60000,
+    toInt(process.env.SOLAX_REALTIME_ONLINE_THRESHOLD_MS, 30 * 60 * 1000),
   ),
   solaxRealtimeRunOnStart: toBool(process.env.SOLAX_REALTIME_RUN_ON_START, false),
   isDefaultJwtSecret: !process.env.JWT_SECRET || process.env.JWT_SECRET === DEFAULT_JWT_SECRET,

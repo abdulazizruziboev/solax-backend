@@ -15,6 +15,7 @@ const ENERGY_CHART_POINTS = Object.freeze([
   }),
   { time: '23:59', minute: 23 * 60 + 59 },
 ]);
+const UZ_WEEKDAY_LABELS = Object.freeze(['Yak', 'Dush', 'Sesh', 'Chor', 'Pay', 'Jum', 'Shan']);
 const TELEGRAM_ID_PAYLOAD_KEYS = Object.freeze([
   'telegramIds',
   'telegramId',
@@ -386,6 +387,18 @@ function normaliseChartDate(value = null) {
   return toTashkentDate(date);
 }
 
+function addDaysToChartDate(dateText, days) {
+  const date = parseDateInput(dateText);
+  date.setUTCDate(date.getUTCDate() + days);
+  return toTashkentDate(date);
+}
+
+function getChartDateWeekdayLabel(dateText) {
+  const date = parseDateInput(dateText);
+  const tashkentDate = new Date(date.getTime() + TASHKENT_OFFSET_MS);
+  return UZ_WEEKDAY_LABELS[tashkentDate.getUTCDay()] ?? dateText;
+}
+
 function minuteOfDay(value) {
   const match = String(value || '').match(/\b(\d{2}):(\d{2})/);
   if (!match) {
@@ -726,6 +739,58 @@ function getEnergyChartDataDeviceCount(db, date, registrationNo = null) {
   return row?.count ?? 0;
 }
 
+function normaliseChartDays(value = 7) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) {
+    return 7;
+  }
+
+  return Math.min(366, Math.max(1, parsed));
+}
+
+function getDailyEnergySeriesRows(db, startDate, endDate, registrationNo = null) {
+  if (registrationNo) {
+    return db
+      .prepare(
+        `
+          SELECT date, COALESCE(yieldToday, 0) AS value
+          FROM daily_stats
+          WHERE registrationNo = ?
+            AND date BETWEEN ? AND ?
+          ORDER BY date ASC
+        `,
+      )
+      .all(registrationNo, startDate, endDate);
+  }
+
+  return db
+    .prepare(
+      `
+        SELECT date, COALESCE(SUM(COALESCE(yieldToday, 0)), 0) AS value
+        FROM daily_stats
+        WHERE date BETWEEN ? AND ?
+        GROUP BY date
+        ORDER BY date ASC
+      `,
+    )
+    .all(startDate, endDate);
+}
+
+function buildDailyEnergySeriesData(rows, startDate, days) {
+  const valuesByDate = new Map(rows.map((row) => [row.date, roundChartValue(row.value)]));
+
+  return Array.from({ length: days }, (_item, index) => {
+    const date = addDaysToChartDate(startDate, index);
+    const value = valuesByDate.get(date) ?? 0;
+
+    return {
+      date,
+      label: getChartDateWeekdayLabel(date),
+      value,
+    };
+  });
+}
+
 function resolveSyncedTextField(rawDevice, keys, existingValue, options) {
   if (!rawDevice || !hasAnyOwn(rawDevice, keys)) {
     return existingValue ?? null;
@@ -832,6 +897,8 @@ function serializeDevice(device) {
     source: device.source,
     trackingEnabled: Boolean(device.trackingEnabled),
     yieldToday: hasOwn(device, 'yieldToday') ? roundChartValue(device.yieldToday) : undefined,
+    yieldMonth: hasOwn(device, 'yieldMonth') ? roundChartValue(device.yieldMonth) : undefined,
+    yieldYear: hasOwn(device, 'yieldYear') ? roundChartValue(device.yieldYear) : undefined,
     yieldTotal: hasOwn(device, 'yieldTotal') ? roundChartValue(device.yieldTotal) : undefined,
     acPower: hasOwn(device, 'acPower') ? roundChartValue(device.acPower) : undefined,
     realtimeUpdatedAt: hasOwn(device, 'realtimeUpdatedAt') ? device.realtimeUpdatedAt : undefined,
@@ -840,13 +907,27 @@ function serializeDevice(device) {
   };
 }
 
+function getCurrentStatsPeriod() {
+  const date = toTashkentDate();
+
+  return {
+    date,
+    month: date.slice(0, 7),
+    yearPattern: `${date.slice(0, 4)}-%`,
+  };
+}
+
 function getDeviceRow(registrationNo) {
+  const statsPeriod = getCurrentStatsPeriod();
+
   return getDb()
     .prepare(
       `
         SELECT
           d.*,
           COALESCE(ds.yieldToday, 0) AS yieldToday,
+          COALESCE(ms.totalYield, 0) AS yieldMonth,
+          COALESCE(ys.yieldYear, 0) AS yieldYear,
           ds.yieldTotal,
           ds.acPower,
           ds.updatedAt AS realtimeUpdatedAt,
@@ -856,10 +937,19 @@ function getDeviceRow(registrationNo) {
         LEFT JOIN daily_stats ds
           ON ds.registrationNo = d.registrationNo
           AND ds.date = ?
+        LEFT JOIN monthly_summary ms
+          ON ms.registrationNo = d.registrationNo
+          AND ms.month = ?
+        LEFT JOIN (
+          SELECT registrationNo, COALESCE(SUM(COALESCE(totalYield, 0)), 0) AS yieldYear
+          FROM monthly_summary
+          WHERE month LIKE ?
+          GROUP BY registrationNo
+        ) ys ON ys.registrationNo = d.registrationNo
         WHERE d.registrationNo = ?
       `,
     )
-    .get(toTashkentDate(), registrationNo);
+    .get(statsPeriod.date, statsPeriod.month, statsPeriod.yearPattern, registrationNo);
 }
 
 function getNextDeviceNo() {
@@ -942,7 +1032,7 @@ export function listDevices({ search, status, source, trackingEnabled, page = 1,
   const whereClause = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '';
 
   const total = db.prepare(`SELECT COUNT(*) AS count FROM devices d ${whereClause}`).get(...params).count;
-  const statsDate = toTashkentDate();
+  const statsPeriod = getCurrentStatsPeriod();
   const rows = db.prepare(`
     SELECT
       d.registrationNo,
@@ -960,6 +1050,8 @@ export function listDevices({ search, status, source, trackingEnabled, page = 1,
       d.source,
       d.trackingEnabled,
       COALESCE(ds.yieldToday, 0) AS yieldToday,
+      COALESCE(ms.totalYield, 0) AS yieldMonth,
+      COALESCE(ys.yieldYear, 0) AS yieldYear,
       ds.yieldTotal,
       ds.acPower,
       ds.updatedAt AS realtimeUpdatedAt,
@@ -969,10 +1061,26 @@ export function listDevices({ search, status, source, trackingEnabled, page = 1,
     LEFT JOIN daily_stats ds
       ON ds.registrationNo = d.registrationNo
       AND ds.date = ?
+    LEFT JOIN monthly_summary ms
+      ON ms.registrationNo = d.registrationNo
+      AND ms.month = ?
+    LEFT JOIN (
+      SELECT registrationNo, COALESCE(SUM(COALESCE(totalYield, 0)), 0) AS yieldYear
+      FROM monthly_summary
+      WHERE month LIKE ?
+      GROUP BY registrationNo
+    ) ys ON ys.registrationNo = d.registrationNo
     ${whereClause}
     ORDER BY COALESCE(d.deviceNo, 999999999) ASC, d.registrationNo ASC
     LIMIT ? OFFSET ?
-  `).all(statsDate, ...params, cleanPageSize, (cleanPage - 1) * cleanPageSize);
+  `).all(
+    statsPeriod.date,
+    statsPeriod.month,
+    statsPeriod.yearPattern,
+    ...params,
+    cleanPageSize,
+    (cleanPage - 1) * cleanPageSize,
+  );
 
   return {
     visibility: getDeviceVisibilitySettings(),
@@ -993,7 +1101,7 @@ export function listDevicesByTelegramId(telegramId) {
     throw new AppError(400, 'telegramId yuborilishi kerak');
   }
 
-  const statsDate = toTashkentDate();
+  const statsPeriod = getCurrentStatsPeriod();
 
   if (areDevicesVisibleToAll()) {
     const rows = getDb()
@@ -1014,6 +1122,8 @@ export function listDevicesByTelegramId(telegramId) {
           d.source,
           d.trackingEnabled,
           COALESCE(ds.yieldToday, 0) AS yieldToday,
+          COALESCE(ms.totalYield, 0) AS yieldMonth,
+          COALESCE(ys.yieldYear, 0) AS yieldYear,
           ds.yieldTotal,
           ds.acPower,
           ds.updatedAt AS realtimeUpdatedAt,
@@ -1023,9 +1133,18 @@ export function listDevicesByTelegramId(telegramId) {
         LEFT JOIN daily_stats ds
           ON ds.registrationNo = d.registrationNo
           AND ds.date = ?
+        LEFT JOIN monthly_summary ms
+          ON ms.registrationNo = d.registrationNo
+          AND ms.month = ?
+        LEFT JOIN (
+          SELECT registrationNo, COALESCE(SUM(COALESCE(totalYield, 0)), 0) AS yieldYear
+          FROM monthly_summary
+          WHERE month LIKE ?
+          GROUP BY registrationNo
+        ) ys ON ys.registrationNo = d.registrationNo
         ORDER BY COALESCE(d.deviceNo, 999999999) ASC, d.registrationNo ASC
       `)
-      .all(statsDate);
+      .all(statsPeriod.date, statsPeriod.month, statsPeriod.yearPattern);
 
     return {
       telegramId: cleanTelegramId,
@@ -1054,6 +1173,8 @@ export function listDevicesByTelegramId(telegramId) {
         d.source,
         d.trackingEnabled,
         COALESCE(ds.yieldToday, 0) AS yieldToday,
+        COALESCE(ms.totalYield, 0) AS yieldMonth,
+        COALESCE(ys.yieldYear, 0) AS yieldYear,
         ds.yieldTotal,
         ds.acPower,
         ds.updatedAt AS realtimeUpdatedAt,
@@ -1063,10 +1184,19 @@ export function listDevicesByTelegramId(telegramId) {
       LEFT JOIN daily_stats ds
         ON ds.registrationNo = d.registrationNo
         AND ds.date = ?
+      LEFT JOIN monthly_summary ms
+        ON ms.registrationNo = d.registrationNo
+        AND ms.month = ?
+      LEFT JOIN (
+        SELECT registrationNo, COALESCE(SUM(COALESCE(totalYield, 0)), 0) AS yieldYear
+        FROM monthly_summary
+        WHERE month LIKE ?
+        GROUP BY registrationNo
+      ) ys ON ys.registrationNo = d.registrationNo
       WHERE COALESCE(d.telegramIds, '') LIKE ?
       ORDER BY COALESCE(d.deviceNo, 999999999) ASC, d.registrationNo ASC
     `)
-    .all(statsDate, `%${cleanTelegramId}%`)
+    .all(statsPeriod.date, statsPeriod.month, statsPeriod.yearPattern, `%${cleanTelegramId}%`)
     .filter((row) => parseTelegramIds(row.telegramIds).includes(cleanTelegramId));
 
   return {
@@ -1134,6 +1264,47 @@ export function getEnergyChart({ registrationNo = null, date = null } = {}) {
   };
 }
 
+export function getDailyEnergySeries({ registrationNo = null, endDate = null, days = 7 } = {}) {
+  const db = getDb();
+  const cleanDays = normaliseChartDays(days);
+  const cleanEndDate = normaliseChartDate(endDate);
+  const startDate = addDaysToChartDate(cleanEndDate, 1 - cleanDays);
+  const cleanRegistrationNo =
+    registrationNo === null || registrationNo === undefined || registrationNo === ''
+      ? null
+      : normaliseText(registrationNo, {
+          label: 'registrationNo',
+          required: true,
+          maxLength: 100,
+        });
+
+  let device = null;
+  if (cleanRegistrationNo) {
+    device = getDeviceRow(cleanRegistrationNo);
+    if (!device) {
+      throw new AppError(404, 'Device topilmadi');
+    }
+  }
+
+  const rows = getDailyEnergySeriesRows(db, startDate, cleanEndDate, cleanRegistrationNo);
+  const data = buildDailyEnergySeriesData(rows, startDate, cleanDays);
+  const total = data.reduce((sum, row) => roundChartValue(sum + row.value), 0);
+
+  return {
+    scope: cleanRegistrationNo ? 'device' : 'all-devices',
+    startDate,
+    endDate: cleanEndDate,
+    days: cleanDays,
+    registrationNo: cleanRegistrationNo,
+    total,
+    unit: 'kWh',
+    valueUnit: 'kWh',
+    source: 'daily_stats.yieldToday',
+    data,
+    device: device ? serializeDevice(device) : null,
+  };
+}
+
 export function listRealtimeSyncTargets() {
   return getDb()
     .prepare(`
@@ -1144,7 +1315,7 @@ export function listRealtimeSyncTargets() {
         trackingEnabled
       FROM devices
       WHERE trackingEnabled = 1
-        AND COALESCE(deviceSn, '') != ''
+        AND COALESCE(registrationNo, '') != ''
       ORDER BY COALESCE(deviceNo, 999999999) ASC, registrationNo ASC
     `)
     .all()
@@ -1156,6 +1327,38 @@ export function listRealtimeSyncTargets() {
     }));
 }
 
+export function getRealtimeSyncTargetByRegistrationNo(registrationNo) {
+  const cleanRegistrationNo = normaliseText(registrationNo, {
+    label: 'registrationNo',
+    required: true,
+    maxLength: 100,
+  });
+  const row = getDb()
+    .prepare(`
+      SELECT
+        registrationNo,
+        deviceSn,
+        onlineStatus,
+        trackingEnabled
+      FROM devices
+      WHERE registrationNo = ? COLLATE NOCASE
+        AND trackingEnabled = 1
+      LIMIT 1
+    `)
+    .get(cleanRegistrationNo);
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    registrationNo: row.registrationNo,
+    deviceSn: row.deviceSn,
+    onlineStatus: row.onlineStatus,
+    trackingEnabled: Boolean(row.trackingEnabled),
+  };
+}
+
 export function saveDeviceRealtimeStats({
   registrationNo,
   deviceSn,
@@ -1164,6 +1367,7 @@ export function saveDeviceRealtimeStats({
   acPower,
   yieldToday,
   yieldTotal,
+  onlineStatus,
   source = 'solax-realtime-api',
 }) {
   const cleanRegistrationNo = normaliseText(registrationNo, {
@@ -1180,11 +1384,39 @@ export function saveDeviceRealtimeStats({
   const nextAcPower = toNumberOrNull(acPower);
   const nextYieldToday = toNumberOrNull(yieldToday);
   const nextYieldTotal = toNumberOrNull(yieldTotal);
+  const nextOnlineStatus = normaliseStatus(onlineStatus, 'Unknown');
+  const nextLastSeenAt = uploadedAt ? realtimeUpdatedAtSql : null;
   const db = getDb();
+  let aggregate = {
+    yieldMonth: 0,
+    yieldYear: 0,
+  };
 
   db.exec('BEGIN');
 
   try {
+    db.prepare(`
+      UPDATE devices
+      SET
+        deviceSn = COALESCE(?, deviceSn),
+        onlineStatus = ?,
+        lastSeenAt = CASE
+          WHEN ? IS NULL THEN lastSeenAt
+          WHEN lastSeenAt IS NULL OR ? > lastSeenAt THEN ?
+          ELSE lastSeenAt
+        END,
+        lastCheckedAt = ?
+      WHERE registrationNo = ?
+    `).run(
+      cleanDeviceSn,
+      nextOnlineStatus,
+      nextLastSeenAt,
+      nextLastSeenAt,
+      nextLastSeenAt,
+      collectedAtSql,
+      cleanRegistrationNo,
+    );
+
     db.prepare(`
       INSERT INTO daily_stats (
         registrationNo,
@@ -1245,6 +1477,8 @@ export function saveDeviceRealtimeStats({
       FROM devices d
       WHERE d.registrationNo = ?
       ON CONFLICT(registrationNo, snapshotMinute) DO UPDATE SET
+        onlineStatus = excluded.onlineStatus,
+        lastSeenAt = excluded.lastSeenAt,
         acPower = excluded.acPower,
         yieldToday = excluded.yieldToday,
         yieldTotal = excluded.yieldTotal,
@@ -1254,7 +1488,7 @@ export function saveDeviceRealtimeStats({
         source = excluded.source
     `).run(
       snapshotMinute,
-      realtimeUpdatedAtSql,
+      collectedAtSql,
       cleanDeviceSn,
       source,
       nextAcPower,
@@ -1294,6 +1528,25 @@ export function saveDeviceRealtimeStats({
         updatedAt = excluded.updatedAt
     `).run(month, realtimeUpdatedAtSql, cleanRegistrationNo, `${month}-%`);
 
+    aggregate = db
+      .prepare(`
+        SELECT
+          COALESCE(ms.totalYield, 0) AS yieldMonth,
+          COALESCE(ys.yieldYear, 0) AS yieldYear
+        FROM devices d
+        LEFT JOIN monthly_summary ms
+          ON ms.registrationNo = d.registrationNo
+          AND ms.month = ?
+        LEFT JOIN (
+          SELECT registrationNo, COALESCE(SUM(COALESCE(totalYield, 0)), 0) AS yieldYear
+          FROM monthly_summary
+          WHERE month LIKE ?
+          GROUP BY registrationNo
+        ) ys ON ys.registrationNo = d.registrationNo
+        WHERE d.registrationNo = ?
+      `)
+      .get(month, `${date.slice(0, 4)}-%`, cleanRegistrationNo) ?? aggregate;
+
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');
@@ -1308,7 +1561,12 @@ export function saveDeviceRealtimeStats({
     snapshotMinute,
     acPower: nextAcPower,
     yieldToday: nextYieldToday,
+    yieldMonth: roundChartValue(aggregate.yieldMonth),
+    yieldYear: roundChartValue(aggregate.yieldYear),
     yieldTotal: nextYieldTotal,
+    onlineStatus: nextOnlineStatus,
+    lastSeenAt: nextLastSeenAt,
+    lastCheckedAt: collectedAtSql,
     updatedAt: realtimeUpdatedAtSql,
   };
 }
@@ -1452,6 +1710,7 @@ export function syncDevicesSnapshot(rawDevices, { syncedAt = Date.now(), source 
     updated: 0,
     historyInserted: 0,
     failed: 0,
+    insertedRegistrationNos: [],
     errors: [],
   };
 
@@ -1510,6 +1769,7 @@ export function syncDevicesSnapshot(rawDevices, { syncedAt = Date.now(), source 
             nextDevice.trackingEnabled,
           );
           summary.inserted += 1;
+          summary.insertedRegistrationNos.push(nextDevice.registrationNo);
         }
 
         if (nextDevice.trackingEnabled) {

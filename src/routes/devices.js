@@ -6,6 +6,7 @@ import {
   areDevicesVisibleToAll,
   createDevice,
   deleteDevice,
+  getDailyEnergySeries,
   getEnergyChart,
   getDeviceByRegistrationNo,
   getDeviceTotals,
@@ -18,6 +19,7 @@ import {
 import { getDeviceSyncState, runDeviceSyncNow } from '../services/device-sync-service.js';
 import {
   getSolaxRealtimeSyncState,
+  runSolaxRealtimeSyncForDevice,
   runSolaxRealtimeSyncNow,
 } from '../services/solax-realtime-sync-service.js';
 
@@ -173,6 +175,30 @@ devicesRouter.get(
   }),
 );
 
+devicesRouter.get(
+  '/energy/daily',
+  asyncHandler(async (req, res) => {
+    if (!hasAdminDeviceAccess(req.auth?.user) && !areDevicesVisibleToAll()) {
+      return res.status(403).json({
+        ok: false,
+        message: "Umumiy chartni ko'rish huquqi yo'q",
+      });
+    }
+
+    const chart = getDailyEnergySeries({
+      registrationNo: req.query.registrationNo,
+      endDate: req.query.endDate ?? req.query.date,
+      days: req.query.days,
+    });
+
+    res.json({
+      ok: true,
+      chart,
+      data: chart.data,
+    });
+  }),
+);
+
 devicesRouter.post(
   '/realtime/sync',
   requireDeviceCrud,
@@ -191,6 +217,30 @@ devicesRouter.get(
     const chart = getEnergyChart({
       registrationNo: req.params.registrationNo,
       date: req.query.date,
+    });
+
+    if (!canReadDevice(req.auth?.user, chart.device)) {
+      return res.status(403).json({
+        ok: false,
+        message: "Bu qurilma chartini ko'rish huquqi yo'q",
+      });
+    }
+
+    res.json({
+      ok: true,
+      chart,
+      data: chart.data,
+    });
+  }),
+);
+
+devicesRouter.get(
+  '/:registrationNo/energy/daily',
+  asyncHandler(async (req, res) => {
+    const chart = getDailyEnergySeries({
+      registrationNo: req.params.registrationNo,
+      endDate: req.query.endDate ?? req.query.date,
+      days: req.query.days,
     });
 
     if (!canReadDevice(req.auth?.user, chart.device)) {
@@ -250,9 +300,14 @@ devicesRouter.post(
   requireDeviceCrud,
   asyncHandler(async (req, res) => {
     const device = createDevice(req.body || {});
+    runSolaxRealtimeSyncForDevice(device.registrationNo, 'device-created-api').catch((error) => {
+      console.error('[devices] Yangi device realtime sync xatosi:', error);
+    });
+
     res.status(201).json({
       ok: true,
       device,
+      realtimeSyncQueued: true,
     });
   }),
 );
