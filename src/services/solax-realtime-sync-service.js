@@ -115,7 +115,7 @@ function getDateField(source, candidateKeys) {
   return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
 }
 
-function inferOnlineStatus(uploadedAt) {
+function inferOnlineStatus(uploadedAt, inverterStatus) {
   if (!uploadedAt) {
     return 'Unknown';
   }
@@ -125,7 +125,21 @@ function inferOnlineStatus(uploadedAt) {
     return 'Unknown';
   }
 
-  return Date.now() - uploadedAtMs <= config.solaxRealtimeOnlineThresholdMs ? 'Online' : 'Offline';
+  const now = Date.now();
+  const diffMs = Math.abs(now - uploadedAtMs);
+
+  // SolaX inverterStatus: 101/102 are Normal/Wait (Online)
+  const statusStr = String(inverterStatus || '');
+  if (statusStr === '102' || statusStr === '101') {
+    return 'Online';
+  }
+
+  // If status is 103 (Fault), it might still be communicating, but let's see.
+  // Generally, if it's within 2 hours, we can call it Online (communicating)
+  // SolaX Cloud is very lenient with "Normal" status.
+  const thresholdMs = config.solaxRealtimeOnlineThresholdMs || (60 * 60 * 1000); // Default to 1 hour if not set
+  
+  return diffMs <= thresholdMs ? 'Online' : 'Offline';
 }
 
 function parseRealtimePayload(payload) {
@@ -161,7 +175,9 @@ function parseRealtimePayload(payload) {
     'timestamp',
     'lastUpdateTime',
   ]);
+  const inverterStatus = getCaseInsensitiveValue(result, ['inverterStatus', 'inverterstatus', 'status']);
   const realtime = {
+    ratedPower: getNumberField(result, ['ratedPower', 'ratedpower']),
     acPower: getNumberField(result, [
       'acPower',
       'acpower',
@@ -189,7 +205,7 @@ function parseRealtimePayload(payload) {
       'energyTotal',
     ]),
     uploadedAt,
-    onlineStatus: inferOnlineStatus(uploadedAt),
+    onlineStatus: inferOnlineStatus(uploadedAt, inverterStatus),
   };
 
   if (realtime.acPower === null && realtime.yieldToday === null && realtime.yieldTotal === null) {
@@ -258,6 +274,7 @@ async function syncRealtimeTarget(target, summary, syncedAt) {
       collectedAt: syncedAt,
       uploadedAt: realtime.uploadedAt,
       acPower: realtime.acPower,
+      ratedPower: realtime.ratedPower,
       yieldToday: realtime.yieldToday,
       yieldTotal: realtime.yieldTotal,
       onlineStatus: realtime.onlineStatus,

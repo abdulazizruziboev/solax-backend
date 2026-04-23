@@ -3,6 +3,7 @@ import { config } from '../config.js';
 import { LEGACY_PERMISSION_ALIASES, USER_PERMISSIONS, USER_ROLES, USER_STATUSES } from '../constants.js';
 import { AppError } from '../middleware/errors.js';
 import { hashPassword, verifyPassword } from '../utils/password.js';
+import { getDeviceTotals } from './device-service.js';
 
 function normaliseUsername(username) {
   return String(username || '')
@@ -261,7 +262,8 @@ export function getAdminStatusSummary() {
     superAdmins: summary.superAdmins ?? 0,
     activeSuperAdmins: summary.activeSuperAdmins ?? 0,
     blockedSuperAdmins: summary.blockedSuperAdmins ?? 0,
-    admins: summary.totalAdmins ?? 0,
+    adminOnly: summary.totalAdmins ?? 0,
+    admins: summary.totalPrivilegedUsers ?? 0,
     totalPrivilegedUsers: summary.totalPrivilegedUsers ?? 0,
   };
 }
@@ -607,31 +609,31 @@ export function getHealthSnapshot() {
 
   const usersSummary = db.prepare(`
     SELECT
-      COUNT(*) AS totalUsers,
-      SUM(CASE WHEN role = 'super_admin' THEN 1 ELSE 0 END) AS superAdmins,
-      SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END) AS admins,
-      SUM(CASE WHEN role = 'user' THEN 1 ELSE 0 END) AS users
+      COALESCE(COUNT(*), 0) AS totalUsers,
+      COALESCE(SUM(CASE WHEN role = 'super_admin' THEN 1 ELSE 0 END), 0) AS superAdmins,
+      COALESCE(SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END), 0) AS adminOnly,
+      COALESCE(SUM(CASE WHEN role = 'user' THEN 1 ELSE 0 END), 0) AS users,
+      COALESCE(SUM(CASE WHEN role IN ('super_admin', 'admin') THEN 1 ELSE 0 END), 0) AS totalPrivilegedUsers
     FROM app_users
-  `).get();
-
-  const devicesSummary = db.prepare(`
-    SELECT
-      COUNT(*) AS totalDevices,
-      SUM(CASE WHEN onlineStatus = 'Online' THEN 1 ELSE 0 END) AS onlineDevices,
-      SUM(CASE WHEN onlineStatus = 'Offline' THEN 1 ELSE 0 END) AS offlineDevices
-    FROM devices
   `).get();
 
   const alertsSummary = db.prepare(`
     SELECT
-      COUNT(*) AS totalAlerts,
-      SUM(CASE WHEN isRead = 0 THEN 1 ELSE 0 END) AS unreadAlerts
+      COALESCE(COUNT(*), 0) AS totalAlerts,
+      COALESCE(SUM(CASE WHEN isRead = 0 THEN 1 ELSE 0 END), 0) AS unreadAlerts
     FROM alerts
   `).get();
 
   return {
-    users: usersSummary,
-    devices: devicesSummary,
+    users: {
+      totalUsers: usersSummary.totalUsers ?? 0,
+      superAdmins: usersSummary.superAdmins ?? 0,
+      adminOnly: usersSummary.adminOnly ?? 0,
+      admins: usersSummary.totalPrivilegedUsers ?? 0,
+      totalPrivilegedUsers: usersSummary.totalPrivilegedUsers ?? 0,
+      users: usersSummary.users ?? 0,
+    },
+    devices: getDeviceTotals(),
     alerts: alertsSummary,
   };
 }

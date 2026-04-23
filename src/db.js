@@ -190,6 +190,12 @@ function createMonitoringTables(db) {
   ensureColumn(db, 'devices', "telegramIds", "telegramIds TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, 'devices', "source", "source TEXT NOT NULL DEFAULT 'scraped'");
   ensureColumn(db, 'devices', 'trackingEnabled', 'trackingEnabled INTEGER NOT NULL DEFAULT 1');
+  ensureColumn(db, 'devices', 'acPower', 'acPower REAL');
+  ensureColumn(db, 'devices', 'yieldToday', 'yieldToday REAL');
+  ensureColumn(db, 'devices', 'yieldMonth', 'yieldMonth REAL');
+  ensureColumn(db, 'devices', 'yieldYear', 'yieldYear REAL');
+  ensureColumn(db, 'devices', 'yieldTotal', 'yieldTotal REAL');
+  ensureColumn(db, 'devices', 'realtimeUpdatedAt', 'realtimeUpdatedAt DATETIME');
   ensureColumn(db, 'device_status_history', "telegramIds", "telegramIds TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, 'device_status_history', 'acPower', 'acPower REAL');
   ensureColumn(db, 'device_status_history', 'yieldToday', 'yieldToday REAL');

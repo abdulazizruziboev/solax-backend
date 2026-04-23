@@ -5,16 +5,18 @@ import { getSetting, setSetting } from './settings-service.js';
 
 const DEVICES_VISIBLE_TO_ALL_SETTING_KEY = 'devices.visibleToAll';
 const TASHKENT_OFFSET_MS = 5 * 60 * 60 * 1000;
-const ENERGY_CHART_POINTS = Object.freeze([
-  ...Array.from({ length: 20 }, (_item, index) => {
-    const hour = index + 4;
+const ENERGY_CHART_POINTS = Object.freeze(
+  Array.from({ length: 96 }, (_item, index) => {
+    const totalMinutes = index * 15;
+    const hour = Math.floor(totalMinutes / 60);
+    const minute = totalMinutes % 60;
     return {
-      time: `${String(hour).padStart(2, '0')}:00`,
-      minute: hour * 60,
+      time: `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`,
+      minute: totalMinutes,
     };
-  }),
-  { time: '23:59', minute: 23 * 60 + 59 },
-]);
+  })
+);
+const LAST_ENERGY_CHART_POINT = ENERGY_CHART_POINTS.at(-1)?.time ?? '23:45';
 const UZ_WEEKDAY_LABELS = Object.freeze(['Yak', 'Dush', 'Sesh', 'Chor', 'Pay', 'Jum', 'Shan']);
 const TELEGRAM_ID_PAYLOAD_KEYS = Object.freeze([
   'telegramIds',
@@ -369,6 +371,11 @@ function roundChartValue(value) {
   return Number(Math.max(0, number).toFixed(2));
 }
 
+function extractSqlDate(value) {
+  const match = String(value || '').match(/^\d{4}-\d{2}-\d{2}/);
+  return match ? match[0] : null;
+}
+
 function normaliseChartDate(value = null) {
   if (value === undefined || value === null || value === '') {
     return toTashkentDate();
@@ -414,53 +421,87 @@ function minuteOfDay(value) {
   return hours * 60 + minutes;
 }
 
-function normalisePowerValue(value) {
+function normalisePowerValue(value, { ratedPower = null } = {}) {
   const number = toNumberOrNull(value);
   if (number === null) {
     return null;
   }
 
-  // SolaX may return acPower in W on some accounts and kW on others.
-  const kilowatts = Math.abs(number) > 1000 ? number / 1000 : number;
+  const absoluteValue = Math.abs(number);
+  if (absoluteValue === 0) {
+    return 0;
+  }
+
+  // When ratedPower is known, values comfortably above that capacity are
+  // interpreted as watts and converted to kW before aggregation/storage.
+  if (Number.isFinite(ratedPower) && ratedPower > 0) {
+    const kilowatts = absoluteValue <= ratedPower * 1.25 ? number : number / 1000;
+    return roundChartValue(kilowatts);
+  }
+
+  const kilowatts = absoluteValue > 1000 ? number / 1000 : number;
   return roundChartValue(kilowatts);
 }
 
-function getNearestPowerValue(rows, minute) {
-  let nearestRow = null;
-  let nearestDistance = Number.MAX_SAFE_INTEGER;
+function getPowerValueAt(rows, minute, maxDistance = 45) {
+  if (rows.length === 0) return 0;
+
+  // Ikkita eng yaqin nuqtani topamiz (chap va o'ng)
+  let left = null;
+  let right = null;
 
   for (const row of rows) {
     const rowMinute = minuteOfDay(row.snapshotMinute);
-    if (rowMinute === null) {
-      continue;
-    }
+    if (rowMinute === null) continue;
 
-    const distance = Math.abs(rowMinute - minute);
-    if (distance < nearestDistance) {
-      nearestRow = row;
-      nearestDistance = distance;
+    if (rowMinute <= minute) {
+      if (!left || rowMinute > minuteOfDay(left.snapshotMinute)) {
+        left = row;
+      }
+    }
+    if (rowMinute >= minute) {
+      if (!right || rowMinute < minuteOfDay(right.snapshotMinute)) {
+        right = row;
+      }
     }
   }
 
-  return normalisePowerValue(nearestRow?.acPower) ?? 0;
+  // Agar nuqtalar orasidagi masofa juda katta bo'lsa, 0 qaytaramiz
+  const leftMin = left ? minuteOfDay(left.snapshotMinute) : -1;
+  const rightMin = right ? minuteOfDay(right.snapshotMinute) : 1441;
+
+  if (left && right) {
+    if (rightMin - leftMin > maxDistance) return 0;
+    if (leftMin === rightMin) return normalisePowerValue(left.acPower) ?? 0;
+
+    // Linear Interpolation: y = y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    const y0 = normalisePowerValue(left.acPower) ?? 0;
+    const y1 = normalisePowerValue(right.acPower) ?? 0;
+    const x0 = leftMin;
+    const x1 = rightMin;
+
+    return roundChartValue(y0 + (y1 - y0) * (minute - x0) / (x1 - x0));
+  }
+
+  if (left && (minute - leftMin) <= 15) return normalisePowerValue(left.acPower) ?? 0;
+  if (right && (rightMin - minute) <= 15) return normalisePowerValue(right.acPower) ?? 0;
+
+  return 0;
 }
 
 function buildActualEnergyChartData(rows) {
-  const cleanRows = rows.filter((row) => normalisePowerValue(row.acPower) !== null);
-  if (cleanRows.length < 3) {
-    return null;
-  }
+  if (rows.length < 2) return null;
 
   return ENERGY_CHART_POINTS.map((point) => ({
     time: point.time,
-    value: getNearestPowerValue(cleanRows, point.minute),
+    value: getPowerValueAt(rows, point.minute),
   }));
 }
 
 function buildEstimatedEnergyChartData(totalEnergy) {
   return ENERGY_CHART_POINTS.map((point) => ({
     time: point.time,
-    value: point.time === '23:59' ? roundChartValue(totalEnergy) : 0,
+    value: point.time === LAST_ENERGY_CHART_POINT ? roundChartValue(totalEnergy) : 0,
   }));
 }
 
@@ -533,7 +574,10 @@ function buildLatestTotalEnergyChartData(totalEnergy) {
 
     return {
       time: point.time,
-      value: shouldAssignTotal || (!totalAssigned && point.time === '23:59') ? roundChartValue(totalEnergy) : 0,
+      value:
+        shouldAssignTotal || (!totalAssigned && point.time === LAST_ENERGY_CHART_POINT)
+          ? roundChartValue(totalEnergy)
+          : 0,
     };
   });
 }
@@ -808,10 +852,27 @@ function resolveSyncedIntegerField(rawDevice, keys, existingValue, label, fallba
 }
 
 function buildSyncedDevicePayload(rawDevice, existingDevice, { registrationNo, syncedAt, source }) {
-  const onlineStatus = normaliseStatus(
-    firstDefined(rawDevice?.onlineStatus, rawDevice?.status, existingDevice?.onlineStatus, 'Unknown'),
+  let onlineStatusValue = firstDefined(rawDevice?.onlineStatus, rawDevice?.status);
+  
+  // FIX: devices.json has swapped Online/Offline labels.
+  if (source === 'devices-json' && onlineStatusValue) {
+    if (onlineStatusValue === 'Online') onlineStatusValue = 'Offline';
+    else if (onlineStatusValue === 'Offline') onlineStatusValue = 'Online';
+  }
+
+  let onlineStatus = normaliseStatus(
+    firstDefined(onlineStatusValue, existingDevice?.onlineStatus, 'Unknown'),
     'Unknown',
   );
+
+  // If we have a recent realtime update, trust it over the JSON source
+  if (source === 'devices-json' && existingDevice?.realtimeUpdatedAt) {
+    const isRealtimeRecent = (Date.now() - new Date(existingDevice.realtimeUpdatedAt).getTime()) < 3600000; // 1 hour
+    if (isRealtimeRecent) {
+      onlineStatus = existingDevice.onlineStatus;
+    }
+  }
+
   const explicitLastSeenAt =
     rawDevice && hasAnyOwn(rawDevice, ['lastSeenAt', 'last_seen_at'])
       ? normaliseOptionalDate(getFirstOwnValue(rawDevice, ['lastSeenAt', 'last_seen_at']), 'lastSeenAt')
@@ -881,6 +942,13 @@ function serializeDevice(device) {
     return null;
   }
 
+  const statsDate = hasOwn(device, 'statsDate')
+    ? device.statsDate
+    : extractSqlDate(device.realtimeUpdatedAt);
+  const hasTodayStats = hasOwn(device, 'hasTodayStats')
+    ? Boolean(device.hasTodayStats)
+    : statsDate === toTashkentDate();
+
   return {
     registrationNo: device.registrationNo,
     deviceSn: device.deviceSn,
@@ -900,10 +968,10 @@ function serializeDevice(device) {
     yieldMonth: hasOwn(device, 'yieldMonth') ? roundChartValue(device.yieldMonth) : undefined,
     yieldYear: hasOwn(device, 'yieldYear') ? roundChartValue(device.yieldYear) : undefined,
     yieldTotal: hasOwn(device, 'yieldTotal') ? roundChartValue(device.yieldTotal) : undefined,
-    acPower: hasOwn(device, 'acPower') ? roundChartValue(device.acPower) : undefined,
+    acPower: hasOwn(device, 'acPower') ? normalisePowerValue(device.acPower) : undefined,
     realtimeUpdatedAt: hasOwn(device, 'realtimeUpdatedAt') ? device.realtimeUpdatedAt : undefined,
-    statsDate: hasOwn(device, 'statsDate') ? device.statsDate : undefined,
-    hasTodayStats: hasOwn(device, 'hasTodayStats') ? Boolean(device.hasTodayStats) : undefined,
+    statsDate,
+    hasTodayStats,
   };
 }
 
@@ -917,6 +985,80 @@ function getCurrentStatsPeriod() {
   };
 }
 
+function getDeviceStatsProjection(alias = 'd') {
+  return `
+    COALESCE(
+      (
+        SELECT ds.date
+        FROM daily_stats ds
+        WHERE ds.registrationNo = ${alias}.registrationNo
+        ORDER BY ds.date DESC
+        LIMIT 1
+      ),
+      SUBSTR(${alias}.realtimeUpdatedAt, 1, 10)
+    ) AS statsDate,
+    CASE
+      WHEN COALESCE(
+        (
+          SELECT ds.date
+          FROM daily_stats ds
+          WHERE ds.registrationNo = ${alias}.registrationNo
+          ORDER BY ds.date DESC
+          LIMIT 1
+        ),
+        SUBSTR(${alias}.realtimeUpdatedAt, 1, 10)
+      ) = ?
+      THEN 1
+      ELSE 0
+    END AS hasTodayStats,
+    COALESCE(
+      (
+        SELECT ds.yieldToday
+        FROM daily_stats ds
+        WHERE ds.registrationNo = ${alias}.registrationNo
+          AND ds.date = ?
+        LIMIT 1
+      ),
+      ${alias}.yieldToday
+    ) AS yieldToday,
+    COALESCE(
+      (
+        SELECT ms.totalYield
+        FROM monthly_summary ms
+        WHERE ms.registrationNo = ${alias}.registrationNo
+          AND ms.month = ?
+        LIMIT 1
+      ),
+      ${alias}.yieldMonth,
+      0
+    ) AS yieldMonth,
+    COALESCE(
+      (
+        SELECT SUM(ms.totalYield)
+        FROM monthly_summary ms
+        WHERE ms.registrationNo = ${alias}.registrationNo
+          AND ms.month LIKE ?
+      ),
+      ${alias}.yieldYear,
+      0
+    ) AS yieldYear,
+    COALESCE(
+      (
+        SELECT ds.yieldTotal
+        FROM daily_stats ds
+        WHERE ds.registrationNo = ${alias}.registrationNo
+        ORDER BY ds.date DESC
+        LIMIT 1
+      ),
+      ${alias}.yieldTotal
+    ) AS yieldTotal
+  `;
+}
+
+function getDeviceStatsProjectionParams(statsPeriod = getCurrentStatsPeriod()) {
+  return [statsPeriod.date, statsPeriod.date, statsPeriod.month, statsPeriod.yearPattern];
+}
+
 function getDeviceRow(registrationNo) {
   const statsPeriod = getCurrentStatsPeriod();
 
@@ -925,31 +1067,12 @@ function getDeviceRow(registrationNo) {
       `
         SELECT
           d.*,
-          COALESCE(ds.yieldToday, 0) AS yieldToday,
-          COALESCE(ms.totalYield, 0) AS yieldMonth,
-          COALESCE(ys.yieldYear, 0) AS yieldYear,
-          ds.yieldTotal,
-          ds.acPower,
-          ds.updatedAt AS realtimeUpdatedAt,
-          ds.date AS statsDate,
-          CASE WHEN ds.registrationNo IS NULL THEN 0 ELSE 1 END AS hasTodayStats
+          ${getDeviceStatsProjection('d')}
         FROM devices d
-        LEFT JOIN daily_stats ds
-          ON ds.registrationNo = d.registrationNo
-          AND ds.date = ?
-        LEFT JOIN monthly_summary ms
-          ON ms.registrationNo = d.registrationNo
-          AND ms.month = ?
-        LEFT JOIN (
-          SELECT registrationNo, COALESCE(SUM(COALESCE(totalYield, 0)), 0) AS yieldYear
-          FROM monthly_summary
-          WHERE month LIKE ?
-          GROUP BY registrationNo
-        ) ys ON ys.registrationNo = d.registrationNo
-        WHERE d.registrationNo = ?
+        WHERE d.registrationNo = ? COLLATE NOCASE
       `,
     )
-    .get(statsPeriod.date, statsPeriod.month, statsPeriod.yearPattern, registrationNo);
+    .get(...getDeviceStatsProjectionParams(statsPeriod), registrationNo);
 }
 
 function getNextDeviceNo() {
@@ -958,20 +1081,107 @@ function getNextDeviceNo() {
 }
 
 export function getDeviceTotals() {
-  const totals = getDb().prepare(`
+  const db = getDb();
+  const statsPeriod = getCurrentStatsPeriod();
+  const devices = db.prepare(`
     SELECT
-      COUNT(*) AS totalDevices,
-      COALESCE(SUM(CASE WHEN onlineStatus = 'Online' THEN 1 ELSE 0 END), 0) AS onlineDevices,
-      COALESCE(SUM(CASE WHEN onlineStatus = 'Offline' THEN 1 ELSE 0 END), 0) AS offlineDevices,
-      COALESCE(SUM(CASE WHEN onlineStatus = 'Unknown' OR onlineStatus IS NULL OR onlineStatus = '' THEN 1 ELSE 0 END), 0) AS unknownDevices
+      onlineStatus,
+      acPower,
+      realtimeUpdatedAt
     FROM devices
-  `).get();
+  `).all();
+
+  const totals = devices.reduce(
+    (summary, device) => {
+      summary.totalDevices += 1;
+
+      if (device.onlineStatus === 'Online') {
+        summary.onlineDevices += 1;
+      } else if (device.onlineStatus === 'Offline') {
+        summary.offlineDevices += 1;
+      } else {
+        summary.unknownDevices += 1;
+      }
+
+      summary.totalAcPower += normalisePowerValue(device.acPower) ?? 0;
+      return summary;
+    },
+    {
+      totalDevices: 0,
+      onlineDevices: 0,
+      offlineDevices: 0,
+      unknownDevices: 0,
+      totalAcPower: 0,
+    },
+  );
+
+  const totalYieldMonth = db
+    .prepare(`
+      SELECT COALESCE(SUM(totalYield), 0) AS total
+      FROM monthly_summary
+      WHERE month = ?
+    `)
+    .get(statsPeriod.month)?.total;
+  const totalYieldYear = db
+    .prepare(`
+      SELECT COALESCE(SUM(totalYield), 0) AS total
+      FROM monthly_summary
+      WHERE month LIKE ?
+    `)
+    .get(statsPeriod.yearPattern)?.total;
+  const totalYieldTotal = db
+    .prepare(`
+      SELECT COALESCE(SUM(total), 0) AS total
+      FROM (
+        SELECT
+          d.registrationNo,
+          COALESCE(
+            (
+              SELECT ds.yieldTotal
+              FROM daily_stats ds
+              WHERE ds.registrationNo = d.registrationNo
+              ORDER BY ds.date DESC
+              LIMIT 1
+            ),
+            d.yieldTotal,
+            0
+          ) AS total
+        FROM devices d
+      )
+    `)
+    .get()?.total;
+  const totalPlants = db
+    .prepare(`
+      SELECT COUNT(DISTINCT NULLIF(TRIM(plantName), '')) AS count
+      FROM devices
+    `)
+    .get()?.count;
+  const latestRealtimeUpdate = db
+    .prepare(`
+      SELECT MAX(realtimeUpdatedAt) AS updatedAt
+      FROM devices
+      WHERE realtimeUpdatedAt IS NOT NULL
+    `)
+    .get()?.updatedAt;
+  const devicesWithTodayStats = getEnergyChartDataDeviceCount(db, statsPeriod.date);
 
   return {
     totalDevices: totals.totalDevices ?? 0,
     onlineDevices: totals.onlineDevices ?? 0,
     offlineDevices: totals.offlineDevices ?? 0,
     unknownDevices: totals.unknownDevices ?? 0,
+    errorDevices: totals.unknownDevices ?? 0,
+    totalAcPower: roundChartValue(totals.totalAcPower),
+    totalYieldToday: getDailyEnergyTotal(db, statsPeriod.date),
+    totalYieldMonth: roundChartValue(totalYieldMonth ?? 0),
+    totalYieldYear: roundChartValue(totalYieldYear ?? 0),
+    totalYieldTotal: roundChartValue(totalYieldTotal ?? 0),
+    totalPlants: totalPlants ?? 0,
+    statsDate: statsPeriod.date,
+    month: statsPeriod.month,
+    year: statsPeriod.date.slice(0, 4),
+    devicesWithTodayStats,
+    powerUpdatedAt: latestRealtimeUpdate ?? null,
   };
 }
 
@@ -993,6 +1203,7 @@ export function setDevicesVisibleToAll(value, { updatedBy = null } = {}) {
 
 export function listDevices({ search, status, source, trackingEnabled, page = 1, pageSize = 25 }) {
   const db = getDb();
+  const statsPeriod = getCurrentStatsPeriod();
   const filters = [];
   const params = [];
 
@@ -1032,51 +1243,16 @@ export function listDevices({ search, status, source, trackingEnabled, page = 1,
   const whereClause = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '';
 
   const total = db.prepare(`SELECT COUNT(*) AS count FROM devices d ${whereClause}`).get(...params).count;
-  const statsPeriod = getCurrentStatsPeriod();
   const rows = db.prepare(`
     SELECT
-      d.registrationNo,
-      d.deviceSn,
-      d.userName,
-      d.plantName,
-      d.deviceModel,
-      d.telegramIds,
-      d.onlineStatus,
-      d.lastSeenAt,
-      d.lastCheckedAt,
-      d.addedAt,
-      d.deviceNo,
-      d.deviceName,
-      d.source,
-      d.trackingEnabled,
-      COALESCE(ds.yieldToday, 0) AS yieldToday,
-      COALESCE(ms.totalYield, 0) AS yieldMonth,
-      COALESCE(ys.yieldYear, 0) AS yieldYear,
-      ds.yieldTotal,
-      ds.acPower,
-      ds.updatedAt AS realtimeUpdatedAt,
-      ds.date AS statsDate,
-      CASE WHEN ds.registrationNo IS NULL THEN 0 ELSE 1 END AS hasTodayStats
+      d.*,
+      ${getDeviceStatsProjection('d')}
     FROM devices d
-    LEFT JOIN daily_stats ds
-      ON ds.registrationNo = d.registrationNo
-      AND ds.date = ?
-    LEFT JOIN monthly_summary ms
-      ON ms.registrationNo = d.registrationNo
-      AND ms.month = ?
-    LEFT JOIN (
-      SELECT registrationNo, COALESCE(SUM(COALESCE(totalYield, 0)), 0) AS yieldYear
-      FROM monthly_summary
-      WHERE month LIKE ?
-      GROUP BY registrationNo
-    ) ys ON ys.registrationNo = d.registrationNo
     ${whereClause}
     ORDER BY COALESCE(d.deviceNo, 999999999) ASC, d.registrationNo ASC
     LIMIT ? OFFSET ?
   `).all(
-    statsPeriod.date,
-    statsPeriod.month,
-    statsPeriod.yearPattern,
+    ...getDeviceStatsProjectionParams(statsPeriod),
     ...params,
     cleanPageSize,
     (cleanPage - 1) * cleanPageSize,
@@ -1107,44 +1283,12 @@ export function listDevicesByTelegramId(telegramId) {
     const rows = getDb()
       .prepare(`
         SELECT
-          d.registrationNo,
-          d.deviceSn,
-          d.userName,
-          d.plantName,
-          d.deviceModel,
-          d.telegramIds,
-          d.onlineStatus,
-          d.lastSeenAt,
-          d.lastCheckedAt,
-          d.addedAt,
-          d.deviceNo,
-          d.deviceName,
-          d.source,
-          d.trackingEnabled,
-          COALESCE(ds.yieldToday, 0) AS yieldToday,
-          COALESCE(ms.totalYield, 0) AS yieldMonth,
-          COALESCE(ys.yieldYear, 0) AS yieldYear,
-          ds.yieldTotal,
-          ds.acPower,
-          ds.updatedAt AS realtimeUpdatedAt,
-          ds.date AS statsDate,
-          CASE WHEN ds.registrationNo IS NULL THEN 0 ELSE 1 END AS hasTodayStats
+          d.*,
+          ${getDeviceStatsProjection('d')}
         FROM devices d
-        LEFT JOIN daily_stats ds
-          ON ds.registrationNo = d.registrationNo
-          AND ds.date = ?
-        LEFT JOIN monthly_summary ms
-          ON ms.registrationNo = d.registrationNo
-          AND ms.month = ?
-        LEFT JOIN (
-          SELECT registrationNo, COALESCE(SUM(COALESCE(totalYield, 0)), 0) AS yieldYear
-          FROM monthly_summary
-          WHERE month LIKE ?
-          GROUP BY registrationNo
-        ) ys ON ys.registrationNo = d.registrationNo
         ORDER BY COALESCE(d.deviceNo, 999999999) ASC, d.registrationNo ASC
       `)
-      .all(statsPeriod.date, statsPeriod.month, statsPeriod.yearPattern);
+      .all(...getDeviceStatsProjectionParams(statsPeriod));
 
     return {
       telegramId: cleanTelegramId,
@@ -1158,45 +1302,13 @@ export function listDevicesByTelegramId(telegramId) {
   const rows = getDb()
     .prepare(`
       SELECT
-        d.registrationNo,
-        d.deviceSn,
-        d.userName,
-        d.plantName,
-        d.deviceModel,
-        d.telegramIds,
-        d.onlineStatus,
-        d.lastSeenAt,
-        d.lastCheckedAt,
-        d.addedAt,
-        d.deviceNo,
-        d.deviceName,
-        d.source,
-        d.trackingEnabled,
-        COALESCE(ds.yieldToday, 0) AS yieldToday,
-        COALESCE(ms.totalYield, 0) AS yieldMonth,
-        COALESCE(ys.yieldYear, 0) AS yieldYear,
-        ds.yieldTotal,
-        ds.acPower,
-        ds.updatedAt AS realtimeUpdatedAt,
-        ds.date AS statsDate,
-        CASE WHEN ds.registrationNo IS NULL THEN 0 ELSE 1 END AS hasTodayStats
+        d.*,
+        ${getDeviceStatsProjection('d')}
       FROM devices d
-      LEFT JOIN daily_stats ds
-        ON ds.registrationNo = d.registrationNo
-        AND ds.date = ?
-      LEFT JOIN monthly_summary ms
-        ON ms.registrationNo = d.registrationNo
-        AND ms.month = ?
-      LEFT JOIN (
-        SELECT registrationNo, COALESCE(SUM(COALESCE(totalYield, 0)), 0) AS yieldYear
-        FROM monthly_summary
-        WHERE month LIKE ?
-        GROUP BY registrationNo
-      ) ys ON ys.registrationNo = d.registrationNo
       WHERE COALESCE(d.telegramIds, '') LIKE ?
       ORDER BY COALESCE(d.deviceNo, 999999999) ASC, d.registrationNo ASC
     `)
-    .all(statsPeriod.date, statsPeriod.month, statsPeriod.yearPattern, `%${cleanTelegramId}%`)
+    .all(...getDeviceStatsProjectionParams(statsPeriod), `%${cleanTelegramId}%`)
     .filter((row) => parseTelegramIds(row.telegramIds).includes(cleanTelegramId));
 
   return {
@@ -1243,12 +1355,9 @@ export function getEnergyChart({ registrationNo = null, date = null } = {}) {
     }
   }
 
-  // Bugungi umumiy energiya (kWh)
   const total = getDailyEnergyTotal(db, cleanDate, cleanRegistrationNo);
-  
-  // Bugungi quvvat tarixi (kW) - Haqiqiy chart uchun acPower ishlatamiz
-  const powerRows = getPowerHistoryRows(db, cleanDate, cleanRegistrationNo);
-  const data = buildActualEnergyChartData(powerRows) || buildEstimatedEnergyChartData(total);
+  const yieldRows = getYieldHistoryRows(db, cleanDate, cleanRegistrationNo);
+  const data = buildHourlyYieldChartData(yieldRows, total) || buildEstimatedEnergyChartData(total);
 
   return {
     scope: cleanRegistrationNo ? 'device' : 'all-devices',
@@ -1256,8 +1365,8 @@ export function getEnergyChart({ registrationNo = null, date = null } = {}) {
     registrationNo: cleanRegistrationNo,
     total,
     unit: 'kWh',
-    valueUnit: 'kW', // Bugungi grafik uchun Quvvat (kW)
-    source: 'device_status_history.acPower',
+    valueUnit: 'kWh',
+    source: 'device_status_history.yieldToday',
     deviceCount: getEnergyChartDeviceCount(db, cleanRegistrationNo),
     dataDeviceCount: getEnergyChartDataDeviceCount(db, cleanDate, cleanRegistrationNo),
     timeZone: 'Asia/Tashkent',
@@ -1368,6 +1477,7 @@ export function saveDeviceRealtimeStats({
   collectedAt = Date.now(),
   uploadedAt,
   acPower,
+  ratedPower = null,
   yieldToday,
   yieldTotal,
   onlineStatus,
@@ -1384,11 +1494,11 @@ export function saveDeviceRealtimeStats({
   const snapshotMinute = toMinuteBucket(realtimeUpdatedAtSql);
   const date = realtimeUpdatedAtSql.slice(0, 10);
   const month = date.slice(0, 7);
-  const nextAcPower = toNumberOrNull(acPower);
+  const nextAcPower = normalisePowerValue(acPower, { ratedPower: toNumberOrNull(ratedPower) });
   const nextYieldToday = toNumberOrNull(yieldToday);
   const nextYieldTotal = toNumberOrNull(yieldTotal);
   const nextOnlineStatus = normaliseStatus(onlineStatus, 'Unknown');
-  const nextLastSeenAt = uploadedAt ? realtimeUpdatedAtSql : null;
+  const nextLastSeenAt = nextOnlineStatus === 'Online' ? realtimeUpdatedAtSql : null;
   const db = getDb();
   let aggregate = {
     yieldMonth: 0,
@@ -1398,28 +1508,6 @@ export function saveDeviceRealtimeStats({
   db.exec('BEGIN');
 
   try {
-    db.prepare(`
-      UPDATE devices
-      SET
-        deviceSn = COALESCE(?, deviceSn),
-        onlineStatus = ?,
-        lastSeenAt = CASE
-          WHEN ? IS NULL THEN lastSeenAt
-          WHEN lastSeenAt IS NULL OR ? > lastSeenAt THEN ?
-          ELSE lastSeenAt
-        END,
-        lastCheckedAt = ?
-      WHERE registrationNo = ?
-    `).run(
-      cleanDeviceSn,
-      nextOnlineStatus,
-      nextLastSeenAt,
-      nextLastSeenAt,
-      nextLastSeenAt,
-      collectedAtSql,
-      cleanRegistrationNo,
-    );
-
     db.prepare(`
       INSERT INTO daily_stats (
         registrationNo,
@@ -1431,8 +1519,8 @@ export function saveDeviceRealtimeStats({
       )
       VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(registrationNo, date) DO UPDATE SET
-        yieldToday = excluded.yieldToday,
-        yieldTotal = excluded.yieldTotal,
+        yieldToday = MAX(daily_stats.yieldToday, excluded.yieldToday),
+        yieldTotal = MAX(daily_stats.yieldTotal, excluded.yieldTotal),
         acPower = excluded.acPower,
         updatedAt = excluded.updatedAt
     `).run(cleanRegistrationNo, date, nextYieldToday, nextYieldTotal, nextAcPower, realtimeUpdatedAtSql);
@@ -1461,8 +1549,8 @@ export function saveDeviceRealtimeStats({
       SELECT
         d.registrationNo,
         ?,
-        d.onlineStatus,
-        d.lastSeenAt,
+        ?,
+        ?,
         ?,
         COALESCE(?, d.deviceSn),
         d.userName,
@@ -1488,9 +1576,11 @@ export function saveDeviceRealtimeStats({
         realtimeUpdatedAt = excluded.realtimeUpdatedAt,
         lastCheckedAt = excluded.lastCheckedAt,
         deviceSn = COALESCE(excluded.deviceSn, device_status_history.deviceSn),
-        source = excluded.source
+      source = excluded.source
     `).run(
       snapshotMinute,
+      nextOnlineStatus,
+      nextLastSeenAt,
       collectedAtSql,
       cleanDeviceSn,
       source,
@@ -1536,19 +1626,51 @@ export function saveDeviceRealtimeStats({
         SELECT
           COALESCE(ms.totalYield, 0) AS yieldMonth,
           COALESCE(ys.yieldYear, 0) AS yieldYear
-        FROM devices d
-        LEFT JOIN monthly_summary ms
-          ON ms.registrationNo = d.registrationNo
-          AND ms.month = ?
+        FROM monthly_summary ms
         LEFT JOIN (
           SELECT registrationNo, COALESCE(SUM(COALESCE(totalYield, 0)), 0) AS yieldYear
           FROM monthly_summary
           WHERE month LIKE ?
           GROUP BY registrationNo
-        ) ys ON ys.registrationNo = d.registrationNo
-        WHERE d.registrationNo = ?
+        ) ys ON ys.registrationNo = ms.registrationNo
+        WHERE ms.registrationNo = ?
+          AND ms.month = ?
       `)
-      .get(month, `${date.slice(0, 4)}-%`, cleanRegistrationNo) ?? aggregate;
+      .get(`${date.slice(0, 4)}-%`, cleanRegistrationNo, month) ?? aggregate;
+
+    db.prepare(`
+      UPDATE devices
+      SET
+        acPower = ?,
+        yieldToday = ?,
+        yieldTotal = ?,
+        yieldMonth = ?,
+        yieldYear = ?,
+        realtimeUpdatedAt = ?,
+        onlineStatus = ?,
+        lastSeenAt = CASE
+          WHEN ? IS NULL THEN lastSeenAt
+          WHEN lastSeenAt IS NULL OR ? > lastSeenAt THEN ?
+          ELSE lastSeenAt
+        END,
+        lastCheckedAt = ?,
+        deviceSn = COALESCE(?, deviceSn)
+      WHERE registrationNo = ?
+    `).run(
+      nextAcPower,
+      roundChartValue(nextYieldToday),
+      roundChartValue(nextYieldTotal),
+      roundChartValue(aggregate.yieldMonth),
+      roundChartValue(aggregate.yieldYear),
+      realtimeUpdatedAtSql,
+      nextOnlineStatus,
+      nextLastSeenAt,
+      nextLastSeenAt,
+      nextLastSeenAt,
+      collectedAtSql,
+      cleanDeviceSn,
+      cleanRegistrationNo
+    );
 
     db.exec('COMMIT');
   } catch (error) {
