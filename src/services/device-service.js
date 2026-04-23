@@ -1243,9 +1243,12 @@ export function getEnergyChart({ registrationNo = null, date = null } = {}) {
     }
   }
 
+  // Bugungi umumiy energiya (kWh)
   const total = getDailyEnergyTotal(db, cleanDate, cleanRegistrationNo);
-  const yieldRows = getYieldHistoryRows(db, cleanDate, cleanRegistrationNo);
-  const data = buildHourlyYieldChartData(yieldRows, total);
+  
+  // Bugungi quvvat tarixi (kW) - Haqiqiy chart uchun acPower ishlatamiz
+  const powerRows = getPowerHistoryRows(db, cleanDate, cleanRegistrationNo);
+  const data = buildActualEnergyChartData(powerRows) || buildEstimatedEnergyChartData(total);
 
   return {
     scope: cleanRegistrationNo ? 'device' : 'all-devices',
@@ -1253,8 +1256,8 @@ export function getEnergyChart({ registrationNo = null, date = null } = {}) {
     registrationNo: cleanRegistrationNo,
     total,
     unit: 'kWh',
-    valueUnit: 'kWh',
-    source: 'device_status_history.yieldToday',
+    valueUnit: 'kW', // Bugungi grafik uchun Quvvat (kW)
+    source: 'device_status_history.acPower',
     deviceCount: getEnergyChartDeviceCount(db, cleanRegistrationNo),
     dataDeviceCount: getEnergyChartDataDeviceCount(db, cleanDate, cleanRegistrationNo),
     timeZone: 'Asia/Tashkent',
