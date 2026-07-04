@@ -1,7 +1,7 @@
-import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { config } from '../config.js';
+import { getDb } from '../db.js';
 
 const BACKUP_DIR = path.resolve(process.cwd(), 'backups');
 const MAX_BACKUPS = 30;
@@ -18,7 +18,7 @@ function getDbPath() {
   return path.resolve(process.cwd(), dbPath);
 }
 
-export function createBackup() {
+export async function createBackup() {
   ensureBackupDir();
   const dbPath = getDbPath();
 
@@ -33,14 +33,9 @@ export function createBackup() {
   const backupPath = path.join(BACKUP_DIR, backupFileName);
 
   try {
-    execSync(`cp "${dbPath}" "${backupPath}"`, { stdio: 'pipe' });
-
-    // WAL checkpoint — backup dan oldin
-    try {
-      execSync(`sqlite3 "${dbPath}" "PRAGMA wal_checkpoint(TRUNCATE);" 2>/dev/null || true`, { stdio: 'pipe' });
-    } catch {
-      // sqlite3 CLI mavjud bo'lmasa ham davom etamiz
-    }
+    // better-sqlite3'ning ichki backup API'si — platformadan mustaqil, WAL bilan
+    // ham xavfsiz ishlaydi (tashqi cp/sqlite3 CLI'ga bog'liq emas).
+    await getDb().backup(backupPath);
 
     const stat = statSync(backupPath);
     console.log(`[backup] Yaratildi: ${backupFileName} (${(stat.size / 1024).toFixed(1)} KB)`);
@@ -97,18 +92,20 @@ export function getBackupStatus() {
 
 // Schedule — har 6 soatda backup
 let backupTimer = null;
+let startupBackupTimer = null;
 
 export function startBackupScheduler() {
   if (backupTimer) return;
 
   // Birinchi backup — 5 daqiqadan so'ng
-  setTimeout(() => {
-    createBackup();
+  startupBackupTimer = setTimeout(() => {
+    createBackup().catch((error) => console.error('[backup] Boshlang\'ich backup xatosi:', error.message));
   }, 5 * 60 * 1000);
+  startupBackupTimer.unref?.();
 
   // Keyin har 6 soatda
   backupTimer = setInterval(() => {
-    createBackup();
+    createBackup().catch((error) => console.error('[backup] Rejalashtirilgan backup xatosi:', error.message));
   }, 6 * 60 * 60 * 1000);
 
   backupTimer.unref?.();
@@ -119,5 +116,10 @@ export function stopBackupScheduler() {
   if (backupTimer) {
     clearInterval(backupTimer);
     backupTimer = null;
+  }
+
+  if (startupBackupTimer) {
+    clearTimeout(startupBackupTimer);
+    startupBackupTimer = null;
   }
 }

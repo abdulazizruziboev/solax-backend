@@ -119,9 +119,6 @@ function createMonitoringTables(db) {
     CREATE INDEX IF NOT EXISTS idx_devices_status ON devices(onlineStatus);
     CREATE INDEX IF NOT EXISTS idx_devices_source ON devices(source);
     CREATE INDEX IF NOT EXISTS idx_devices_device_no ON devices(deviceNo);
-    CREATE INDEX IF NOT EXISTS idx_devices_model ON devices(deviceModel);
-    CREATE INDEX IF NOT EXISTS idx_devices_rated_power ON devices(ratedPower);
-    CREATE INDEX IF NOT EXISTS idx_devices_lat_lon ON devices(latitude, longitude);
 
     CREATE TABLE IF NOT EXISTS alerts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -239,6 +236,12 @@ function createMonitoringTables(db) {
   ensureColumn(db, 'device_status_history', 'realtimeUpdatedAt', 'realtimeUpdatedAt DATETIME');
   ensureColumn(db, 'alerts', 'isRead', 'isRead INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'alerts', 'createdAt', 'createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP');
+
+  // Yangi indekslar (ensureColumn dan keyin)
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_devices_model ON devices(deviceModel)'); } catch { /* column mavjud bo'lishi kerak */ }
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_devices_rated_power ON devices(ratedPower)'); } catch { /* ignore */ }
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_devices_lat_lon ON devices(latitude, longitude)'); } catch { /* ignore */ }
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(date DESC)'); } catch { /* ignore */ }
 }
 
 function migrateLegacyAdmins(db) {

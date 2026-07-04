@@ -27,13 +27,19 @@ const server = app.listen(config.port, config.host, async () => {
   startBackupScheduler();
 });
 
-function shutdown(signal) {
+async function shutdown(signal) {
   console.log(`[backend] ${signal} qabul qilindi, server to'xtatilmoqda`);
   stopDeviceSyncScheduler();
   stopSolaxRealtimeSyncScheduler();
   stopDailyReportScheduler();
   stopBackupScheduler();
-  createBackup();
+
+  try {
+    await createBackup();
+  } catch (error) {
+    console.error('[backup] Shutdown backup xatosi:', error.message);
+  }
+
   server.close(() => {
     process.exit(0);
   });

@@ -5,7 +5,7 @@ import helmet from 'helmet';
 import { config } from './config.js';
 import { getDb } from './db.js';
 import { errorHandler, notFoundHandler } from './middleware/errors.js';
-import { apiLimiter, loginLimiter, authApiLimiter, pdfExportLimiter } from './middleware/rate-limit.js';
+import { apiLimiter, loginLimiter, authApiLimiter } from './middleware/rate-limit.js';
 import { adminRouter } from './routes/admin.js';
 import { authRouter } from './routes/auth.js';
 import { devicesRouter } from './routes/devices.js';

@@ -37,7 +37,7 @@ monitoringRouter.get(
 monitoringRouter.post(
   '/backup',
   asyncHandler(async (_req, res) => {
-    const backupPath = createBackup();
+    const backupPath = await createBackup();
     res.json({
       ok: true,
       backup: backupPath ? { path: backupPath } : null,

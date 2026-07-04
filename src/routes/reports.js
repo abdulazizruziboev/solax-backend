@@ -2,6 +2,7 @@ import { Router } from 'express';
 
 import { requireAuth, requireRoles } from '../middleware/auth.js';
 import { AppError, asyncHandler } from '../middleware/errors.js';
+import { pdfExportLimiter } from '../middleware/rate-limit.js';
 import {
   areDevicesVisibleToAll,
   canUserReadDevice,
@@ -162,6 +163,7 @@ reportsRouter.get(
 
 reportsRouter.get(
   '/export/energy',
+  pdfExportLimiter,
   asyncHandler(async (req, res) => {
     const scope = resolveReportScope(req);
     const pdfBuffer = await generateEnergyReportPdf({
@@ -181,6 +183,7 @@ reportsRouter.get(
 
 reportsRouter.get(
   '/export/efficiency',
+  pdfExportLimiter,
   asyncHandler(async (req, res) => {
     const scope = resolveReportScope(req);
     const pdfBuffer = await generateEfficiencyReportPdf({

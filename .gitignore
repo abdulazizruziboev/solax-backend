@@ -15,6 +15,14 @@ certs
 *.sqlite
 *.sqlite-*
 
+# Secrets
+.env
+.env.*
+!.env.example
+backups/
+backend.pid
+bot.pid
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

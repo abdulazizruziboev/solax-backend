@@ -172,6 +172,31 @@ function normaliseOptionalInteger(value, label) {
   return parsed;
 }
 
+function normaliseOptionalNumber(value, label, { min, max } = {}) {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (value === null || value === '') {
+    return null;
+  }
+
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) {
+    throw new AppError(400, `${label} raqam bo'lishi kerak`);
+  }
+
+  if (min !== undefined && parsed < min) {
+    throw new AppError(400, `${label} kamida ${min} bo'lishi kerak`);
+  }
+
+  if (max !== undefined && parsed > max) {
+    throw new AppError(400, `${label} ko'pi bilan ${max} bo'lishi kerak`);
+  }
+
+  return parsed;
+}
+
 function normaliseTrackingEnabled(value, fallback = 1) {
   if (value === undefined) {
     return fallback;
@@ -964,6 +989,10 @@ function serializeDevice(device) {
     deviceName: device.deviceName,
     source: device.source,
     trackingEnabled: Boolean(device.trackingEnabled),
+    latitude: hasOwn(device, 'latitude') ? device.latitude : undefined,
+    longitude: hasOwn(device, 'longitude') ? device.longitude : undefined,
+    address: hasOwn(device, 'address') ? device.address : undefined,
+    ratedPower: hasOwn(device, 'ratedPower') ? device.ratedPower : undefined,
     yieldToday: hasOwn(device, 'yieldToday') ? roundChartValue(device.yieldToday) : undefined,
     yieldMonth: hasOwn(device, 'yieldMonth') ? roundChartValue(device.yieldMonth) : undefined,
     yieldYear: hasOwn(device, 'yieldYear') ? roundChartValue(device.yieldYear) : undefined,
@@ -1566,7 +1595,7 @@ export function listDevicesForUser({ userId, telegramId = null }) {
     };
   }
 
-  const telegramPattern = cleanTelegramId ? `%${cleanTelegramId}%` : ' no-telegram-match';
+  const telegramPattern = cleanTelegramId ? `%${cleanTelegramId}%` : ' no-telegram-match';
   const rows = db
     .prepare(`
       SELECT
@@ -1982,6 +2011,10 @@ export function createDevice(payload) {
     deviceName: normaliseText(payload?.deviceName, { label: 'deviceName', maxLength: 100 }),
     source: normaliseText(payload?.source, { label: 'source', maxLength: 50 }) ?? 'manual',
     trackingEnabled: normaliseTrackingEnabled(payload?.trackingEnabled, 1),
+    latitude: normaliseOptionalNumber(payload?.latitude, 'latitude', { min: -90, max: 90 }) ?? null,
+    longitude: normaliseOptionalNumber(payload?.longitude, 'longitude', { min: -180, max: 180 }) ?? null,
+    address: normaliseText(payload?.address, { label: 'address', maxLength: 255 }),
+    ratedPower: normaliseOptionalNumber(payload?.ratedPower, 'ratedPower', { min: 0 }) ?? null,
   };
 
   getDb().prepare(`
@@ -1999,9 +2032,13 @@ export function createDevice(payload) {
       deviceNo,
       deviceName,
       source,
-      trackingEnabled
+      trackingEnabled,
+      latitude,
+      longitude,
+      address,
+      ratedPower
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     device.registrationNo,
     device.deviceSn,
@@ -2017,6 +2054,10 @@ export function createDevice(payload) {
     device.deviceName,
     device.source,
     device.trackingEnabled,
+    device.latitude,
+    device.longitude,
+    device.address,
+    device.ratedPower,
   );
 
   return getDeviceByRegistrationNo(registrationNo);
@@ -2249,6 +2290,18 @@ export function updateDevice(registrationNo, payload) {
     trackingEnabled: hasOwn(payload, 'trackingEnabled')
       ? normaliseTrackingEnabled(payload.trackingEnabled, existing.trackingEnabled)
       : existing.trackingEnabled,
+    latitude: hasOwn(payload, 'latitude')
+      ? normaliseOptionalNumber(payload.latitude, 'latitude', { min: -90, max: 90 })
+      : existing.latitude,
+    longitude: hasOwn(payload, 'longitude')
+      ? normaliseOptionalNumber(payload.longitude, 'longitude', { min: -180, max: 180 })
+      : existing.longitude,
+    address: hasOwn(payload, 'address')
+      ? normaliseText(payload.address, { label: 'address', maxLength: 255 })
+      : existing.address,
+    ratedPower: hasOwn(payload, 'ratedPower')
+      ? normaliseOptionalNumber(payload.ratedPower, 'ratedPower', { min: 0 })
+      : existing.ratedPower,
   };
 
   getDb().prepare(`
@@ -2265,7 +2318,11 @@ export function updateDevice(registrationNo, payload) {
       deviceNo = ?,
       deviceName = ?,
       source = ?,
-      trackingEnabled = ?
+      trackingEnabled = ?,
+      latitude = ?,
+      longitude = ?,
+      address = ?,
+      ratedPower = ?
     WHERE registrationNo = ?
   `).run(
     nextDevice.deviceSn,
@@ -2280,6 +2337,10 @@ export function updateDevice(registrationNo, payload) {
     nextDevice.deviceName,
     nextDevice.source,
     nextDevice.trackingEnabled,
+    nextDevice.latitude,
+    nextDevice.longitude,
+    nextDevice.address,
+    nextDevice.ratedPower,
     cleanRegistrationNo,
   );
 
