@@ -19,6 +19,7 @@ export const openApiSpec = {
     { name: 'Auth', description: 'Local login va Telegram WebApp auth' },
     { name: 'Admin', description: 'Admin va super admin statistikasi' },
     { name: 'Devices', description: "Qurilmalar ro'yxati va CRUD amallari" },
+    { name: 'Reports', description: "Energiya hisobotlari: soatlik/kunlik/haftalik/oylik/oraliq va kun oxiri (EOD) arxiv" },
     { name: 'Users', description: 'Role va foydalanuvchi boshqaruvi' },
   ],
   components: {
@@ -665,6 +666,314 @@ export const openApiSpec = {
           },
           403: {
             description: 'Faqat admin va super_admin uchun',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/reports/energy': {
+      get: {
+        tags: ['Reports'],
+        summary: 'Energiya hisoboti (soatlik/kunlik/haftalik/oylik yoki sana oralig\'i)',
+        description:
+          "Berilgan oraliqdagi ishlab chiqarilgan energiya seriyasi, umumiy xulosa va qurilmalar kesimi. granularity berilmasa oraliq uzunligiga qarab avtomatik tanlanadi (1 kun → hourly, ≤45 kun → daily, ≤240 kun → weekly, undan katta → monthly). Oddiy foydalanuvchi faqat o'z qurilmalari bo'yicha hisobot oladi.",
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            in: 'query',
+            name: 'startDate',
+            required: false,
+            schema: { type: 'string', example: '2026-06-28' },
+            description: "Boshlanish sanasi (YYYY-MM-DD). Berilmasa endDate - 6 kun",
+          },
+          {
+            in: 'query',
+            name: 'endDate',
+            required: false,
+            schema: { type: 'string', example: '2026-07-04' },
+            description: 'Tugash sanasi (YYYY-MM-DD). Berilmasa bugun',
+          },
+          {
+            in: 'query',
+            name: 'granularity',
+            required: false,
+            schema: { type: 'string', enum: ['hourly', 'daily', 'weekly', 'monthly'] },
+            description: "Agregatsiya darajasi. hourly faqat bitta kun uchun",
+          },
+          {
+            in: 'query',
+            name: 'registrationNo',
+            required: false,
+            schema: { type: 'string' },
+            description: 'Bitta qurilma bo\'yicha hisobot uchun',
+          },
+        ],
+        responses: {
+          200: {
+            description: 'Hisobot: summary (jami, o\'rtacha, eng yaxshi nuqta), series (grafik uchun) va devices (qurilmalar kesimi, ulush % bilan)',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    ok: { type: 'boolean', example: true },
+                    report: {
+                      type: 'object',
+                      properties: {
+                        startDate: { type: 'string', example: '2026-06-28' },
+                        endDate: { type: 'string', example: '2026-07-04' },
+                        granularity: { type: 'string', example: 'daily' },
+                        scope: { type: 'string', example: 'user' },
+                        unit: { type: 'string', example: 'kWh' },
+                        summary: { type: 'object' },
+                        series: { type: 'array', items: { type: 'object' } },
+                        devices: { type: 'array', items: { type: 'object' } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          400: {
+            description: "Sana yoki granularity noto'g'ri",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          403: {
+            description: "Bu qurilma hisobotini ko'rish huquqi yo'q",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/reports/daily': {
+      get: {
+        tags: ['Reports'],
+        summary: 'Kun oxiri (EOD) hisobotlar arxivi (admin)',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            in: 'query',
+            name: 'limit',
+            required: false,
+            schema: { type: 'integer', example: 30 },
+            description: 'Nechta oxirgi hisobot qaytarilsin (max 366)',
+          },
+        ],
+        responses: {
+          200: {
+            description: 'Scheduler holati va saqlangan kunlik hisobotlar ro\'yxati',
+            content: {
+              'application/json': {
+                schema: { type: 'object' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/reports/daily/{date}': {
+      get: {
+        tags: ['Reports'],
+        summary: 'Bitta kunning EOD hisoboti (admin, kerak bo\'lsa yaratib beradi)',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            in: 'path',
+            name: 'date',
+            required: true,
+            schema: { type: 'string', example: '2026-07-03' },
+          },
+        ],
+        responses: {
+          200: {
+            description: 'Kun bo\'yicha to\'liq hisobot (perDevice kesimi bilan)',
+            content: {
+              'application/json': {
+                schema: { type: 'object' },
+              },
+            },
+          },
+          404: {
+            description: 'Hisobot topilmadi',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/reports/daily/generate': {
+      post: {
+        tags: ['Reports'],
+        summary: 'EOD hisobotni qo\'lda yaratish/yangilash (admin)',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: false,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  date: { type: 'string', example: '2026-07-03', description: 'Berilmasa bugun' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: 'Hisobot yaratildi/yangilandi',
+            content: {
+              'application/json': {
+                schema: { type: 'object' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/devices/mine': {
+      get: {
+        tags: ['Devices'],
+        summary: "Joriy foydalanuvchining qurilmalarini olish (claim + telegram bog'lanish)",
+        security: [{ bearerAuth: [] }],
+        responses: {
+          200: {
+            description:
+              "Foydalanuvchi hisobiga ulangan qurilmalar. Har bir device claimedByMe flag bilan qaytadi. devicesVisibleToAll yoqilgan bo'lsa barcha qurilmalar qaytadi",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/DeviceByTelegramResponse' },
+              },
+            },
+          },
+          401: {
+            description: "Token noto'g'ri",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/devices/claim': {
+      post: {
+        tags: ['Devices'],
+        summary: "Seriya raqami (SN) orqali qurilmani o'z hisobiga ulash",
+        description:
+          "SN devices jadvalidan registrationNo yoki deviceSn bo'yicha qidiriladi. Topilmasa SolaX Cloud API orqali tekshiriladi va muvaffaqiyatli bo'lsa qurilma avtomatik yaratiladi (source='user-claim'). Claim qilingach foydalanuvchining telegramId si qurilmaga ham bog'lanadi.",
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['serialNumber'],
+                properties: {
+                  serialNumber: {
+                    type: 'string',
+                    example: 'SW9XXXXXXX',
+                    description: 'Qurilma seriya raqami (registrationNo yoki deviceSn)',
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: 'Qurilma hisobga ulandi (created=true bo\'lsa yangi yaratildi)',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/DeviceResponse' },
+              },
+            },
+          },
+          400: {
+            description: 'serialNumber yuborilmadi',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          404: {
+            description: "SN bo'yicha qurilma topilmadi (SolaX Cloud ham tanimadi)",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          409: {
+            description: 'Qurilma allaqachon shu hisobga ulangan',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          503: {
+            description: "SolaX API vaqtincha tekshira olmadi (token yo'q yoki kvota tugagan)",
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/devices/claim/{registrationNo}': {
+      delete: {
+        tags: ['Devices'],
+        summary: "Qurilmani o'z hisobidan uzish (unclaim)",
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            in: 'path',
+            name: 'registrationNo',
+            required: true,
+            schema: { type: 'string', example: 'SW9XXXXXXX' },
+            description: 'Uziladigan qurilmaning registrationNo si',
+          },
+        ],
+        responses: {
+          200: {
+            description: 'Qurilma hisobdan uzildi',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    ok: { type: 'boolean', example: true },
+                    registrationNo: { type: 'string', example: 'SW9XXXXXXX' },
+                    unclaimed: { type: 'boolean', example: true },
+                  },
+                },
+              },
+            },
+          },
+          404: {
+            description: 'Bu qurilma hisobga ulanmagan',
             content: {
               'application/json': {
                 schema: { $ref: '#/components/schemas/ErrorResponse' },

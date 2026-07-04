@@ -88,6 +88,10 @@ export const config = Object.freeze({
     toInt(process.env.SOLAX_REALTIME_ONLINE_THRESHOLD_MS, 30 * 60 * 1000),
   ),
   solaxRealtimeRunOnStart: toBool(process.env.SOLAX_REALTIME_RUN_ON_START, false),
+  reportEodEnabled: toBool(process.env.REPORT_EOD_ENABLED, true),
+  reportEodTime: /^\d{2}:\d{2}$/.test((process.env.REPORT_EOD_TIME || '').trim())
+    ? (process.env.REPORT_EOD_TIME || '').trim()
+    : '23:55',
   isDefaultJwtSecret: !process.env.JWT_SECRET || process.env.JWT_SECRET === DEFAULT_JWT_SECRET,
   isDefaultSuperAdminPassword:
     !process.env.SUPER_ADMIN_PASSWORD || process.env.SUPER_ADMIN_PASSWORD === 'ChangeMe123!',

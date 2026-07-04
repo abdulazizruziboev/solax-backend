@@ -109,12 +109,19 @@ function createMonitoringTables(db) {
       deviceNo INTEGER,
       deviceName TEXT,
       source TEXT NOT NULL DEFAULT 'scraped',
-      trackingEnabled INTEGER NOT NULL DEFAULT 1
+      trackingEnabled INTEGER NOT NULL DEFAULT 1,
+      latitude REAL,
+      longitude REAL,
+      address TEXT,
+      ratedPower REAL
     );
 
     CREATE INDEX IF NOT EXISTS idx_devices_status ON devices(onlineStatus);
     CREATE INDEX IF NOT EXISTS idx_devices_source ON devices(source);
     CREATE INDEX IF NOT EXISTS idx_devices_device_no ON devices(deviceNo);
+    CREATE INDEX IF NOT EXISTS idx_devices_model ON devices(deviceModel);
+    CREATE INDEX IF NOT EXISTS idx_devices_rated_power ON devices(ratedPower);
+    CREATE INDEX IF NOT EXISTS idx_devices_lat_lon ON devices(latitude, longitude);
 
     CREATE TABLE IF NOT EXISTS alerts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -140,6 +147,7 @@ function createMonitoringTables(db) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_daily_stats_registration_no ON daily_stats(registrationNo, date DESC);
+    CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(date DESC);
 
     CREATE TABLE IF NOT EXISTS monthly_summary (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -183,6 +191,30 @@ function createMonitoringTables(db) {
       ON device_status_history(registrationNo, snapshotMinute DESC);
     CREATE INDEX IF NOT EXISTS idx_device_status_history_snapshot_minute
       ON device_status_history(snapshotMinute DESC);
+
+    CREATE TABLE IF NOT EXISTS user_devices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      userId INTEGER NOT NULL,
+      registrationNo TEXT NOT NULL,
+      claimedVia TEXT NOT NULL DEFAULT 'sn-claim',
+      createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(userId, registrationNo)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_user_devices_user_id ON user_devices(userId);
+    CREATE INDEX IF NOT EXISTS idx_user_devices_registration_no ON user_devices(registrationNo);
+
+    CREATE TABLE IF NOT EXISTS daily_reports (
+      date TEXT PRIMARY KEY,
+      generatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      generatedBy TEXT NOT NULL DEFAULT 'schedule',
+      totalYield REAL NOT NULL DEFAULT 0,
+      totalDevices INTEGER NOT NULL DEFAULT 0,
+      activeDevices INTEGER NOT NULL DEFAULT 0,
+      bestRegistrationNo TEXT,
+      bestYield REAL,
+      perDevice TEXT NOT NULL DEFAULT '[]'
+    );
   `);
 
   ensureColumn(db, 'devices', 'deviceNo', 'deviceNo INTEGER');
@@ -196,6 +228,10 @@ function createMonitoringTables(db) {
   ensureColumn(db, 'devices', 'yieldYear', 'yieldYear REAL');
   ensureColumn(db, 'devices', 'yieldTotal', 'yieldTotal REAL');
   ensureColumn(db, 'devices', 'realtimeUpdatedAt', 'realtimeUpdatedAt DATETIME');
+  ensureColumn(db, 'devices', 'latitude', 'latitude REAL');
+  ensureColumn(db, 'devices', 'longitude', 'longitude REAL');
+  ensureColumn(db, 'devices', 'address', 'address TEXT');
+  ensureColumn(db, 'devices', 'ratedPower', 'ratedPower REAL');
   ensureColumn(db, 'device_status_history', "telegramIds", "telegramIds TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, 'device_status_history', 'acPower', 'acPower REAL');
   ensureColumn(db, 'device_status_history', 'yieldToday', 'yieldToday REAL');

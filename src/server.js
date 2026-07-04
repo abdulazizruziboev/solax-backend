@@ -1,10 +1,15 @@
 import { createApp } from './app.js';
 import { config } from './config.js';
+import {
+  startDailyReportScheduler,
+  stopDailyReportScheduler,
+} from './services/daily-report-service.js';
 import { startDeviceSyncScheduler, stopDeviceSyncScheduler } from './services/device-sync-service.js';
 import {
   startSolaxRealtimeSyncScheduler,
   stopSolaxRealtimeSyncScheduler,
 } from './services/solax-realtime-sync-service.js';
+import { startBackupScheduler, stopBackupScheduler, createBackup } from './services/backup-service.js';
 
 if (config.isDefaultJwtSecret) {
   console.warn("[security] JWT_SECRET default qiymatda turibdi. Productionda o'zgartiring.");
@@ -18,12 +23,17 @@ const server = app.listen(config.port, config.host, async () => {
   console.log(`[swagger] ${config.publicUrl}/docs`);
   await startDeviceSyncScheduler();
   await startSolaxRealtimeSyncScheduler();
+  startDailyReportScheduler();
+  startBackupScheduler();
 });
 
 function shutdown(signal) {
   console.log(`[backend] ${signal} qabul qilindi, server to'xtatilmoqda`);
   stopDeviceSyncScheduler();
   stopSolaxRealtimeSyncScheduler();
+  stopDailyReportScheduler();
+  stopBackupScheduler();
+  createBackup();
   server.close(() => {
     process.exit(0);
   });

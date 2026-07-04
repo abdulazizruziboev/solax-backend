@@ -104,7 +104,7 @@ function toTashkentSqlDateTime(value) {
   return new Date(date.getTime() + TASHKENT_OFFSET_MS).toISOString().slice(0, 19).replace('T', ' ');
 }
 
-function toTashkentDate(value = Date.now()) {
+export function toTashkentDate(value = Date.now()) {
   return toTashkentSqlDateTime(value).slice(0, 10);
 }
 
@@ -362,7 +362,7 @@ function toNumberOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function roundChartValue(value) {
+export function roundChartValue(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) {
     return 0;
@@ -376,7 +376,7 @@ function extractSqlDate(value) {
   return match ? match[0] : null;
 }
 
-function normaliseChartDate(value = null) {
+export function normaliseChartDate(value = null) {
   if (value === undefined || value === null || value === '') {
     return toTashkentDate();
   }
@@ -394,7 +394,7 @@ function normaliseChartDate(value = null) {
   return toTashkentDate(date);
 }
 
-function addDaysToChartDate(dateText, days) {
+export function addDaysToChartDate(dateText, days) {
   const date = parseDateInput(dateText);
   date.setUTCDate(date.getUTCDate() + days);
   return toTashkentDate(date);
@@ -1335,6 +1335,266 @@ export function getDeviceByRegistrationNo(registrationNo) {
   return serializeDevice(device);
 }
 
+function normaliseSerialNumber(serialNumber) {
+  return normaliseText(serialNumber, {
+    label: 'serialNumber',
+    required: true,
+    maxLength: 100,
+  });
+}
+
+function normaliseClaimUserId(userId) {
+  const cleanUserId = Number.parseInt(userId, 10);
+
+  if (!Number.isFinite(cleanUserId) || cleanUserId <= 0) {
+    throw new AppError(400, "Foydalanuvchi ID noto'g'ri");
+  }
+
+  return cleanUserId;
+}
+
+function getClaimedRegistrationNoSet(userId) {
+  const rows = getDb()
+    .prepare('SELECT registrationNo FROM user_devices WHERE userId = ?')
+    .all(userId);
+
+  return new Set(rows.map((row) => row.registrationNo));
+}
+
+function addTelegramIdToDevice(registrationNo, telegramId) {
+  const cleanTelegramId = normaliseTelegramId(telegramId);
+  if (!cleanTelegramId) {
+    return;
+  }
+
+  const db = getDb();
+  const device = db
+    .prepare('SELECT registrationNo, telegramIds FROM devices WHERE registrationNo = ? COLLATE NOCASE')
+    .get(registrationNo);
+
+  if (!device) {
+    return;
+  }
+
+  const telegramIds = parseTelegramIds(device.telegramIds);
+  if (telegramIds.includes(cleanTelegramId)) {
+    return;
+  }
+
+  telegramIds.push(cleanTelegramId);
+  db.prepare('UPDATE devices SET telegramIds = ? WHERE registrationNo = ?').run(
+    serialiseTelegramIds(telegramIds),
+    device.registrationNo,
+  );
+}
+
+function removeTelegramIdFromDevice(registrationNo, telegramId) {
+  const cleanTelegramId = normaliseTelegramId(telegramId);
+  if (!cleanTelegramId) {
+    return;
+  }
+
+  const db = getDb();
+  const device = db
+    .prepare('SELECT registrationNo, telegramIds FROM devices WHERE registrationNo = ? COLLATE NOCASE')
+    .get(registrationNo);
+
+  if (!device) {
+    return;
+  }
+
+  const telegramIds = parseTelegramIds(device.telegramIds);
+  if (!telegramIds.includes(cleanTelegramId)) {
+    return;
+  }
+
+  db.prepare('UPDATE devices SET telegramIds = ? WHERE registrationNo = ?').run(
+    serialiseTelegramIds(telegramIds.filter((id) => id !== cleanTelegramId)),
+    device.registrationNo,
+  );
+}
+
+export function findDeviceBySerial(serialNumber) {
+  const cleanSerial = normaliseSerialNumber(serialNumber);
+  const statsPeriod = getCurrentStatsPeriod();
+
+  const row = getDb()
+    .prepare(`
+      SELECT
+        d.*,
+        ${getDeviceStatsProjection('d')}
+      FROM devices d
+      WHERE d.registrationNo = ? COLLATE NOCASE
+        OR COALESCE(d.deviceSn, '') = ? COLLATE NOCASE
+      ORDER BY CASE WHEN d.registrationNo = ? COLLATE NOCASE THEN 0 ELSE 1 END ASC
+      LIMIT 1
+    `)
+    .get(...getDeviceStatsProjectionParams(statsPeriod), cleanSerial, cleanSerial, cleanSerial);
+
+  return row ? serializeDevice(row) : null;
+}
+
+export function isDeviceClaimedByUser(userId, registrationNo) {
+  const cleanUserId = Number.parseInt(userId, 10);
+  const cleanRegistrationNo = String(registrationNo || '').trim();
+
+  if (!Number.isFinite(cleanUserId) || !cleanRegistrationNo) {
+    return false;
+  }
+
+  const row = getDb()
+    .prepare('SELECT id FROM user_devices WHERE userId = ? AND registrationNo = ? COLLATE NOCASE LIMIT 1')
+    .get(cleanUserId, cleanRegistrationNo);
+
+  return Boolean(row);
+}
+
+export function claimDevice({ userId, registrationNo, telegramId = null, claimedVia = 'sn-claim' }) {
+  const cleanUserId = normaliseClaimUserId(userId);
+  const device = getDeviceRow(
+    normaliseText(registrationNo, { label: 'registrationNo', required: true, maxLength: 100 }),
+  );
+
+  if (!device) {
+    throw new AppError(404, 'Device topilmadi');
+  }
+
+  if (isDeviceClaimedByUser(cleanUserId, device.registrationNo)) {
+    throw new AppError(409, 'Bu qurilma allaqachon hisobingizga ulangan');
+  }
+
+  getDb()
+    .prepare('INSERT INTO user_devices (userId, registrationNo, claimedVia) VALUES (?, ?, ?)')
+    .run(cleanUserId, device.registrationNo, String(claimedVia || 'sn-claim'));
+
+  addTelegramIdToDevice(device.registrationNo, telegramId);
+
+  return {
+    ...getDeviceByRegistrationNo(device.registrationNo),
+    claimedByMe: true,
+  };
+}
+
+export function unclaimDevice({ userId, registrationNo, telegramId = null }) {
+  const cleanUserId = normaliseClaimUserId(userId);
+  const cleanRegistrationNo = normaliseText(registrationNo, {
+    label: 'registrationNo',
+    required: true,
+    maxLength: 100,
+  });
+
+  const result = getDb()
+    .prepare('DELETE FROM user_devices WHERE userId = ? AND registrationNo = ? COLLATE NOCASE')
+    .run(cleanUserId, cleanRegistrationNo);
+
+  if (result.changes === 0) {
+    throw new AppError(404, 'Bu qurilma hisobingizga ulanmagan');
+  }
+
+  removeTelegramIdFromDevice(cleanRegistrationNo, telegramId);
+
+  return {
+    registrationNo: cleanRegistrationNo,
+    unclaimed: true,
+  };
+}
+
+export function canUserReadDevice(user, device) {
+  if (!device) {
+    return false;
+  }
+
+  if (user?.role === 'admin' || user?.role === 'super_admin' || areDevicesVisibleToAll()) {
+    return true;
+  }
+
+  if (isDeviceClaimedByUser(user?.id, device.registrationNo)) {
+    return true;
+  }
+
+  const cleanTelegramId = String(user?.telegramId || '').trim();
+  return Boolean(cleanTelegramId) && (device.telegramIds || []).includes(cleanTelegramId);
+}
+
+export function listUserDeviceRegistrationNos({ userId, telegramId = null }) {
+  const cleanUserId = Number.parseInt(userId, 10);
+  if (!Number.isFinite(cleanUserId)) {
+    return [];
+  }
+
+  const claimed = [...getClaimedRegistrationNoSet(cleanUserId)];
+  const cleanTelegramId = normaliseTelegramId(telegramId);
+
+  if (!cleanTelegramId) {
+    return claimed;
+  }
+
+  const telegramRows = getDb()
+    .prepare("SELECT registrationNo, telegramIds FROM devices WHERE COALESCE(telegramIds, '') LIKE ?")
+    .all(`%${cleanTelegramId}%`)
+    .filter((row) => parseTelegramIds(row.telegramIds).includes(cleanTelegramId));
+
+  return [...new Set([...claimed, ...telegramRows.map((row) => row.registrationNo)])];
+}
+
+export function listDevicesForUser({ userId, telegramId = null }) {
+  const cleanUserId = normaliseClaimUserId(userId);
+  const cleanTelegramId = normaliseTelegramId(telegramId);
+  const db = getDb();
+  const statsPeriod = getCurrentStatsPeriod();
+  const claimedSet = getClaimedRegistrationNoSet(cleanUserId);
+
+  if (areDevicesVisibleToAll()) {
+    const rows = db
+      .prepare(`
+        SELECT
+          d.*,
+          ${getDeviceStatsProjection('d')}
+        FROM devices d
+        ORDER BY COALESCE(d.deviceNo, 999999999) ASC, d.registrationNo ASC
+      `)
+      .all(...getDeviceStatsProjectionParams(statsPeriod));
+
+    return {
+      scope: 'all-devices',
+      visibility: getDeviceVisibilitySettings(),
+      total: rows.length,
+      devices: rows.map((row) => ({
+        ...serializeDevice(row),
+        claimedByMe: claimedSet.has(row.registrationNo),
+      })),
+    };
+  }
+
+  const telegramPattern = cleanTelegramId ? `%${cleanTelegramId}%` : ' no-telegram-match';
+  const rows = db
+    .prepare(`
+      SELECT
+        d.*,
+        ${getDeviceStatsProjection('d')}
+      FROM devices d
+      WHERE d.registrationNo IN (SELECT ud.registrationNo FROM user_devices ud WHERE ud.userId = ?)
+        OR COALESCE(d.telegramIds, '') LIKE ?
+      ORDER BY COALESCE(d.deviceNo, 999999999) ASC, d.registrationNo ASC
+    `)
+    .all(...getDeviceStatsProjectionParams(statsPeriod), cleanUserId, telegramPattern)
+    .filter(
+      (row) =>
+        claimedSet.has(row.registrationNo) ||
+        (cleanTelegramId && parseTelegramIds(row.telegramIds).includes(cleanTelegramId)),
+    );
+
+  return {
+    scope: 'user',
+    visibility: getDeviceVisibilitySettings(),
+    total: rows.length,
+    devices: rows.map((row) => ({
+      ...serializeDevice(row),
+      claimedByMe: claimedSet.has(row.registrationNo),
+    })),
+  };
+}
+
 export function getEnergyChart({ registrationNo = null, date = null } = {}) {
   const db = getDb();
   const cleanDate = normaliseChartDate(date);
@@ -2045,6 +2305,7 @@ export function deleteDevice(registrationNo) {
     db.prepare('DELETE FROM daily_stats WHERE registrationNo = ?').run(cleanRegistrationNo);
     db.prepare('DELETE FROM monthly_summary WHERE registrationNo = ?').run(cleanRegistrationNo);
     db.prepare('DELETE FROM device_status_history WHERE registrationNo = ?').run(cleanRegistrationNo);
+    db.prepare('DELETE FROM user_devices WHERE registrationNo = ? COLLATE NOCASE').run(cleanRegistrationNo);
     db.prepare('DELETE FROM devices WHERE registrationNo = ?').run(cleanRegistrationNo);
     db.exec('COMMIT');
   } catch (error) {

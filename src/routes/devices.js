@@ -1,26 +1,33 @@
 import { Router } from 'express';
 
 import { requireAuth, requirePermission, requireRoles } from '../middleware/auth.js';
-import { asyncHandler } from '../middleware/errors.js';
+import { AppError, asyncHandler } from '../middleware/errors.js';
 import {
   areDevicesVisibleToAll,
+  canUserReadDevice,
+  claimDevice,
   createDevice,
   deleteDevice,
+  findDeviceBySerial,
   getDailyEnergySeries,
   getEnergyChart,
   getDeviceByRegistrationNo,
   getDeviceTotals,
   getDeviceVisibilitySettings,
   listDevicesByTelegramId,
+  listDevicesForUser,
   listDevices,
   setDevicesVisibleToAll,
+  unclaimDevice,
   updateDevice,
 } from '../services/device-service.js';
 import { getDeviceSyncState, runDeviceSyncNow } from '../services/device-sync-service.js';
 import {
   getSolaxRealtimeSyncState,
+  isSolaxQuotaError,
   runSolaxRealtimeSyncForDevice,
   runSolaxRealtimeSyncNow,
+  verifySolaxSerialNumber,
 } from '../services/solax-realtime-sync-service.js';
 
 const devicesRouter = Router();
@@ -43,15 +50,7 @@ function canReadTelegramDevices(user, telegramId) {
 }
 
 function canReadDevice(user, device) {
-  if (!device) {
-    return false;
-  }
-
-  if (hasAdminDeviceAccess(user) || areDevicesVisibleToAll()) {
-    return true;
-  }
-
-  return device.telegramIds.includes(String(user?.telegramId || '').trim());
+  return canUserReadDevice(user, device);
 }
 
 devicesRouter.get(
@@ -148,6 +147,94 @@ devicesRouter.get(
     res.json({
       ok: true,
       realtimeSync: getSolaxRealtimeSyncState(),
+    });
+  }),
+);
+
+devicesRouter.get(
+  '/mine',
+  asyncHandler(async (req, res) => {
+    const payload = listDevicesForUser({
+      userId: req.auth.user.id,
+      telegramId: req.auth.user.telegramId,
+    });
+
+    res.json({
+      ok: true,
+      ...payload,
+    });
+  }),
+);
+
+devicesRouter.post(
+  '/claim',
+  asyncHandler(async (req, res) => {
+    const serialNumber = String(req.body?.serialNumber ?? req.body?.sn ?? '').trim();
+
+    if (!serialNumber) {
+      throw new AppError(400, 'serialNumber yuborilishi kerak');
+    }
+
+    let device = findDeviceBySerial(serialNumber);
+    let created = false;
+
+    if (!device) {
+      try {
+        await verifySolaxSerialNumber(serialNumber);
+      } catch (error) {
+        console.error('[devices] SN tekshiruvi muvaffaqiyatsiz:', serialNumber, error.message);
+
+        if (error.code === 'SOLAX_TOKEN_MISSING' || isSolaxQuotaError(error)) {
+          throw new AppError(
+            503,
+            "Hozircha SN ni tekshirib bo'lmadi. Birozdan so'ng qayta urining.",
+          );
+        }
+
+        throw new AppError(
+          404,
+          "Bu seriya raqami bo'yicha qurilma topilmadi. SN ni tekshirib qayta urining.",
+        );
+      }
+
+      device = createDevice({
+        registrationNo: serialNumber,
+        source: 'user-claim',
+      });
+      created = true;
+    }
+
+    const claimedDevice = claimDevice({
+      userId: req.auth.user.id,
+      registrationNo: device.registrationNo,
+      telegramId: req.auth.user.telegramId,
+      claimedVia: 'sn-claim',
+    });
+
+    runSolaxRealtimeSyncForDevice(device.registrationNo, 'device-claimed').catch((error) => {
+      console.error('[devices] Claim realtime sync xatosi:', error);
+    });
+
+    res.status(201).json({
+      ok: true,
+      created,
+      device: claimedDevice,
+    });
+  }),
+);
+
+devicesRouter.delete(
+  '/claim/:registrationNo',
+  asyncHandler(async (req, res) => {
+    const result = unclaimDevice({
+      userId: req.auth.user.id,
+      registrationNo: req.params.registrationNo,
+      telegramId: req.auth.user.telegramId,
+    });
+
+    res.json({
+      ok: true,
+      ...result,
     });
   }),
 );

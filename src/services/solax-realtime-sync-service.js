@@ -280,6 +280,21 @@ async function syncRealtimeTarget(target, summary, syncedAt) {
       onlineStatus: realtime.onlineStatus,
       source: SOLAX_REALTIME_SOURCE,
     });
+
+    // SSE broadcast
+    try {
+      const { broadcastToDevice } = await import('./sse-service.js');
+      broadcastToDevice(target.registrationNo, 'device-update', {
+        registrationNo: target.registrationNo,
+        acPower: realtime.acPower,
+        yieldToday: realtime.yieldToday,
+        yieldTotal: realtime.yieldTotal,
+        onlineStatus: realtime.onlineStatus,
+      });
+    } catch {
+      // SSE xatosini e'tiborsiz qoldiramiz
+    }
+
     summary.succeeded += 1;
   } catch (error) {
     summary.failed += 1;
@@ -425,6 +440,26 @@ function scheduleNextRun() {
   }, delayMs);
 
   schedulerTimer.unref?.();
+}
+
+export function isSolaxQuotaError(error) {
+  return isQuotaError(error);
+}
+
+export async function verifySolaxSerialNumber(serialNumber) {
+  const cleanSerialNumber = String(serialNumber || '').trim();
+
+  if (!cleanSerialNumber) {
+    throw new Error('serialNumber bosh');
+  }
+
+  if (!config.solaxRealtimeTokenId) {
+    const error = new Error('SolaX token sozlanmagan');
+    error.code = 'SOLAX_TOKEN_MISSING';
+    throw error;
+  }
+
+  return fetchRealtimeInfo(cleanSerialNumber);
 }
 
 export function getSolaxRealtimeSyncState() {
