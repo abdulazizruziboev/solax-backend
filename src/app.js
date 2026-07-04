@@ -16,9 +16,8 @@ import { getHealthSnapshot } from './services/user-service.js';
 import { getDailyReportSchedulerState } from './services/daily-report-service.js';
 import { getDeviceSyncState } from './services/device-sync-service.js';
 import { getSolaxRealtimeSyncState } from './services/solax-realtime-sync-service.js';
-import { createSSEClient, getConnectedClients } from './services/sse-service.js';
+import { consumeSSETicket, createSSEClient, getConnectedClients, issueSSETicket } from './services/sse-service.js';
 import { requireAuth } from './middleware/auth.js';
-import { verifyAccessToken } from './utils/jwt.js';
 import { getUserById, assertActiveUser } from './services/user-service.js';
 import { openApiSpec, swaggerUiHandler, swaggerUiSetup } from './swagger.js';
 
@@ -58,7 +57,15 @@ export function createApp() {
   app.disable('x-powered-by');
   app.use(clearHttp3AltSvc);
   app.use(helmet({
-    contentSecurityPolicy: false,
+    contentSecurityPolicy: {
+      directives: {
+        ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+        // Swagger UI (/docs) requires inline styles/scripts to render.
+        'script-src': ["'self'", "'unsafe-inline'"],
+        'style-src': ["'self'", "'unsafe-inline'"],
+        'img-src': ["'self'", 'data:'],
+      },
+    },
     crossOriginEmbedderPolicy: false,
   }));
   app.use(cors(buildCorsOptions()));
@@ -94,18 +101,26 @@ export function createApp() {
     });
   });
 
-  // SSE — real-time event stream (token query param orqali)
+  // SSE ulanishidan oldin oddiy Bearer auth bilan bir martalik ticket olinadi -
+  // shunda asosiy JWT hech qachon URL query'da ochiq yurmaydi.
+  app.get('/api/events/ticket', authApiLimiter, requireAuth, (req, res) => {
+    res.json({ ok: true, ticket: issueSSETicket(req.auth.user.id) });
+  });
+
+  // SSE — real-time event stream (bir martalik, 30 soniyalik ticket orqali)
   app.get('/api/events', (req, res) => {
-    const token = req.query.token || (req.headers.authorization || '').replace('Bearer ', '');
-    if (!token) {
-      return res.status(401).json({ ok: false, message: 'Token kerak' });
+    const ticket = req.query.ticket;
+    const userId = ticket ? consumeSSETicket(ticket) : null;
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: "Ticket yaroqsiz yoki muddati tugagan" });
     }
+
     try {
-      const payload = verifyAccessToken(token);
-      const user = assertActiveUser(getUserById(Number(payload.sub)));
+      const user = assertActiveUser(getUserById(userId));
       createSSEClient(req, res, user.id);
     } catch {
-      res.status(401).json({ ok: false, message: 'Token yaroqsiz' });
+      res.status(401).json({ ok: false, message: 'Hisob faol emas' });
     }
   });
 

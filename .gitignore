@@ -23,6 +23,11 @@ backups/
 backend.pid
 bot.pid
 
+# Mijozlarning shaxsiy ma'lumotlari (ism, telefon) bo'lgan importlar
+data/*.xlsx
+data/*.csv
+db/devices.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

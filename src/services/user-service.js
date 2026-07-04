@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto';
+
 import { getDb } from '../db.js';
 import { config } from '../config.js';
 import { LEGACY_PERMISSION_ALIASES, USER_PERMISSIONS, USER_ROLES, USER_STATUSES } from '../constants.js';
@@ -130,10 +132,19 @@ export function getUserForLogin(username) {
     .get(normaliseUsername(username));
 }
 
+// Foydalanuvchi mavjud bo'lmaganda ham scrypt hisoblash bir xil vaqt olishi
+// uchun (aks holda javob vaqtidan username mavjudligini bilib olish mumkin).
+const DUMMY_PASSWORD_HASH = hashPassword(randomBytes(32).toString('hex'));
+
 export function authenticateLocalUser(username, password) {
   const user = getUserForLogin(username);
+  const passwordMatches = verifyPassword(
+    password,
+    user?.passwordHash ?? DUMMY_PASSWORD_HASH.hash,
+    user?.passwordSalt ?? DUMMY_PASSWORD_HASH.salt,
+  );
 
-  if (!user || user.status !== 'active' || !verifyPassword(password, user.passwordHash, user.passwordSalt)) {
+  if (!user || user.status !== 'active' || !passwordMatches) {
     throw new AppError(401, 'Login yoki parol xato');
   }
 
@@ -278,8 +289,8 @@ function validateLocalCredentials({ username, password }) {
     );
   }
 
-  if (typeof password !== 'string' || password.length < 6) {
-    throw new AppError(400, "Parol kamida 6 ta belgidan iborat bo'lishi kerak");
+  if (typeof password !== 'string' || password.length < 8) {
+    throw new AppError(400, "Parol kamida 8 ta belgidan iborat bo'lishi kerak");
   }
 
   return cleanUsername;
