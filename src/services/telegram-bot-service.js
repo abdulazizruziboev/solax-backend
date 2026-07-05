@@ -722,8 +722,8 @@ function buildRealtimeSyncText(notice = null) {
     lines.push('');
     lines.push('<b>Oxirgi natija:</b>');
     lines.push(`- Qayta ishlandi: ${escapeTelegramHtml(lastSummary.processed ?? 0)}/${escapeTelegramHtml(lastSummary.totalTargets ?? 0)}`);
-    lines.push(`- <tg-emoji emoji-id="5427009714745517756">✅</tg-emoji> Muvaffaqiyatli: ${escapeTelegramHtml(lastSummary.succeeded ?? 0)}`);
-    lines.push(`- <tg-emoji emoji-id="5465665476971471368">❌</tg-emoji> Muvaffaqiyatsiz: ${escapeTelegramHtml(lastSummary.failed ?? 0)}`);
+    lines.push(`- ✅ Muvaffaqiyatli: ${escapeTelegramHtml(lastSummary.succeeded ?? 0)}`);
+    lines.push(`- ❌ Muvaffaqiyatsiz: ${escapeTelegramHtml(lastSummary.failed ?? 0)}`);
     lines.push(`- O'tkazib yuborildi: ${escapeTelegramHtml(lastSummary.skipped ?? 0)}`);
 
     if (lastSummary.quotaLimited) {
@@ -1255,8 +1255,8 @@ function notifyRealtimeSyncResult(chatId, summary) {
   const lines = [
     '<b><tg-emoji emoji-id="5843799474362652262">🔄</tg-emoji> Quvvat sync yakunlandi</b>',
     `<tg-emoji emoji-id="5877318502947229960">💻</tg-emoji> Qayta ishlandi: ${escapeTelegramHtml(summary.processed ?? 0)}/${escapeTelegramHtml(summary.totalTargets ?? 0)}`,
-    `<tg-emoji emoji-id="5427009714745517756">✅</tg-emoji> Muvaffaqiyatli: ${escapeTelegramHtml(summary.succeeded ?? 0)}`,
-    `<tg-emoji emoji-id="5465665476971471368">❌</tg-emoji> Muvaffaqiyatsiz: ${escapeTelegramHtml(summary.failed ?? 0)}`,
+    `✅ Muvaffaqiyatli: ${escapeTelegramHtml(summary.succeeded ?? 0)}`,
+    `❌ Muvaffaqiyatsiz: ${escapeTelegramHtml(summary.failed ?? 0)}`,
     `⏭ O'tkazib yuborildi: ${escapeTelegramHtml(summary.skipped ?? 0)}`,
     summary.quotaLimited ? 'SolaX kunlik limitga tushgan.' : null,
   ].filter(Boolean);
