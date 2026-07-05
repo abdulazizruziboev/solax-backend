@@ -124,7 +124,7 @@ export function createApp() {
     }
   });
 
-  app.use('/api/auth', loginLimiter, authRouter);
+  app.use('/api/auth', authRouter);
   app.use('/api/admin', authApiLimiter, adminRouter);
   app.use('/api/devices', authApiLimiter, devicesRouter);
   app.use('/api/reports', authApiLimiter, reportsRouter);
