@@ -105,6 +105,9 @@ export const config = Object.freeze({
   powerDropMinKw: Math.max(0, toFloat(process.env.POWER_DROP_MIN_KW, 1)),
   powerDropRatedFraction: Math.min(1, Math.max(0, toFloat(process.env.POWER_DROP_RATED_FRACTION, 0.15))),
   powerDropCooldownMinutes: Math.max(5, toInt(process.env.POWER_DROP_COOLDOWN_MINUTES, 180)),
+  // Oldingi o'lchov shundan eski bo'lsa (bo'shliq) — "keskin tushish" deб hisoblamaymiz,
+  // chunki ketma-ket bo'lmagan ikki o'lchovni solishtirish noto'g'ri (soxta ogohlantirish).
+  powerDropMaxGapMinutes: Math.max(2, toInt(process.env.POWER_DROP_MAX_GAP_MINUTES, 20)),
   powerDropActiveStartHour: Math.min(23, Math.max(0, toInt(process.env.POWER_DROP_ACTIVE_START_HOUR, 9))),
   powerDropActiveEndHour: Math.min(24, Math.max(1, toInt(process.env.POWER_DROP_ACTIVE_END_HOUR, 17))),
   reportEodEnabled: toBool(process.env.REPORT_EOD_ENABLED, true),

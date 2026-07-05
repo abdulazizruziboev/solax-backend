@@ -52,6 +52,19 @@ export async function checkAndNotifyPowerDrop(result) {
       return;
     }
 
+    // Oldingi o'lchov juda eski bo'lsa (ma'lumot bo'shlig'i) — ogohlantirmaymiz.
+    // "Keskin tushish" faqat KETMA-KET (yaqin vaqtdagi) ikki o'lchov orasida bo'ladi;
+    // 3 soatlik eski qiymatni hozirgisiga solishtirish soxta ogohlantirish beradi.
+    if (result.previousCollectedAt && result.lastCheckedAt) {
+      const diff = getDb()
+        .prepare('SELECT (julianday(?) - julianday(?)) * 1440.0 AS minutes')
+        .get(result.lastCheckedAt, result.previousCollectedAt);
+      const gapMinutes = Number(diff?.minutes);
+      if (Number.isFinite(gapMinutes) && gapMinutes > config.powerDropMaxGapMinutes) {
+        return;
+      }
+    }
+
     // Faqat kunduzi (quyosh ishlab turadigan soatlar) tekshiramiz —
     // kechqurun quvvatning nolga tushishi tabiiy holat, ogohlantirish kerak emas.
     const hour = new Date().getHours();
