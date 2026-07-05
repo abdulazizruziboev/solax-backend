@@ -24,6 +24,7 @@ import {
   generateEnergyReportPdf,
   generateEfficiencyReportPdf,
 } from '../services/pdf-export-service.js';
+import { sendTelegramDocument } from '../services/telegram-bot-service.js';
 
 const reportsRouter = Router();
 
@@ -197,6 +198,42 @@ reportsRouter.get(
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(pdfBuffer);
+  }),
+);
+
+reportsRouter.post(
+  '/export/:type/telegram',
+  pdfExportLimiter,
+  asyncHandler(async (req, res) => {
+    const { type } = req.params;
+
+    if (type !== 'energy' && type !== 'efficiency') {
+      throw new AppError(400, "Noto'g'ri hisobot turi");
+    }
+
+    const user = req.auth.user;
+
+    if (!user.telegramId) {
+      throw new AppError(400, "Telegram ID topilmadi, PDF yuborib bo'lmadi");
+    }
+
+    const scope = resolveReportScope(req);
+    const generatePdf = type === 'energy' ? generateEnergyReportPdf : generateEfficiencyReportPdf;
+    const pdfBuffer = await generatePdf({
+      startDate: req.query.startDate,
+      endDate: req.query.endDate,
+      granularity: type === 'energy' ? req.query.granularity : undefined,
+      registrationNos: scope.registrationNos,
+      user,
+    });
+
+    const filename = `solarpro-${type}-${req.query.startDate || 'all'}-${req.query.endDate || 'all'}.pdf`;
+
+    await sendTelegramDocument(user.telegramId, pdfBuffer, filename, {
+      caption: type === 'energy' ? 'Energiya hisobot' : 'Samaradorlik hisobot',
+    });
+
+    res.json({ ok: true, message: 'PDF Telegram orqali yuborildi' });
   }),
 );
 

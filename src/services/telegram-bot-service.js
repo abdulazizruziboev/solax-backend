@@ -882,6 +882,32 @@ export async function sendTelegramMessage(chatId, text, extra = {}) {
   });
 }
 
+export async function sendTelegramDocument(chatId, buffer, filename, extra = {}) {
+  ensureBotToken();
+
+  const form = new FormData();
+  form.append('chat_id', String(chatId));
+  if (extra.caption) {
+    form.append('caption', extra.caption);
+    form.append('parse_mode', extra.parse_mode || TELEGRAM_PARSE_MODE);
+  }
+  form.append('document', new Blob([buffer], { type: 'application/pdf' }), filename);
+
+  const response = await fetch(getTelegramApiUrl('sendDocument'), {
+    method: 'POST',
+    body: form,
+  });
+
+  const data = await response.json().catch(() => null);
+
+  if (!response.ok || !data?.ok) {
+    const description = data?.description || `HTTP ${response.status}`;
+    throw new Error(`Telegram API xatosi (sendDocument): ${description}`);
+  }
+
+  return data.result;
+}
+
 export async function sendTelegramMessageToMany(chatIds, text, extra = {}) {
   const uniqueChatIds = [
     ...new Set(
