@@ -472,6 +472,8 @@ function scheduleNextRun() {
   const timerDelayMs = Math.min(delayMs, SCHEDULE_RECHECK_MS);
   schedulerState.nextRunAt = new Date(Date.now() + delayMs).toISOString();
   schedulerTimer = setTimeout(() => {
+    // Chegara hali 60s dan uzoq bo'lsa — qayta tekshiramiz (recheck).
+    // Chegaraga yetganda (delayMs <= recheck) — sync'ni ishga tushiramiz.
     if (timerDelayMs < delayMs) {
       scheduleNextRun();
       return;
@@ -482,7 +484,7 @@ function scheduleNextRun() {
       .finally(() => {
         scheduleNextRun();
       });
-  }, delayMs);
+  }, timerDelayMs);
 
   schedulerTimer.unref?.();
 }
