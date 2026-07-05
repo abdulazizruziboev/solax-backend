@@ -1707,6 +1707,10 @@ export function getDailyEnergySeries({ registrationNo = null, endDate = null, da
 }
 
 export function listRealtimeSyncTargets() {
+  // Eng eski (yoki hech qachon tekshirilmagan) qurilmalarni BIRINCHI yangilaymiz.
+  // SolaX quota limiti sababli har run ro'yxat oxirigacha yetmasligi mumkin;
+  // "eng eskisi birinchi" tartibi barcha qurilmalarga adolatli navbat beradi
+  // va hech bir qurilma uzoq muddat eski qolib ketmaydi.
   return getDb()
     .prepare(`
       SELECT
@@ -1717,7 +1721,7 @@ export function listRealtimeSyncTargets() {
       FROM devices
       WHERE trackingEnabled = 1
         AND COALESCE(registrationNo, '') != ''
-      ORDER BY COALESCE(deviceNo, 999999999) ASC, registrationNo ASC
+      ORDER BY (lastCheckedAt IS NOT NULL), lastCheckedAt ASC, COALESCE(deviceNo, 999999999) ASC, registrationNo ASC
     `)
     .all()
     .map((row) => ({
