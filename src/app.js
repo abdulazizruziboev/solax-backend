@@ -20,6 +20,7 @@ import { consumeSSETicket, createSSEClient, getConnectedClients, issueSSETicket 
 import { requireAuth } from './middleware/auth.js';
 import { getUserById, assertActiveUser } from './services/user-service.js';
 import { openApiSpec, swaggerUiHandler, swaggerUiSetup } from './swagger.js';
+import { payloadEncryption } from './middleware/payload-encryption.js';
 
 function buildCorsOptions() {
   if (config.corsOrigins.length === 1 && config.corsOrigins[0] === '*') {
@@ -71,6 +72,7 @@ export function createApp() {
   app.use(cors(buildCorsOptions()));
   app.use(express.json({ limit: '1mb' }));
   app.use('/api/', apiLimiter);
+  app.use('/api', payloadEncryption);
 
   app.get('/', (_req, res) => {
     res.json({

@@ -58,6 +58,8 @@ export const config = Object.freeze({
   jwtSecret: process.env.JWT_SECRET || DEFAULT_JWT_SECRET,
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
   databasePath: process.env.DATABASE_PATH || './solax_data.sqlite',
+  payloadEncryptionEnabled: toBool(process.env.PAYLOAD_ENCRYPTION_ENABLED, false),
+  payloadEncryptionKey: (process.env.PAYLOAD_ENCRYPTION_KEY || '').trim(),
   superAdminUsername: (process.env.SUPER_ADMIN_USERNAME || 'superadmin').trim().toLowerCase(),
   superAdminPassword: process.env.SUPER_ADMIN_PASSWORD || 'ChangeMe123!',
   superAdminName: (process.env.SUPER_ADMIN_NAME || 'Super Admin').trim(),
