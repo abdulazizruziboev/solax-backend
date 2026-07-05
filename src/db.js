@@ -212,6 +212,19 @@ function createMonitoringTables(db) {
       bestYield REAL,
       perDevice TEXT NOT NULL DEFAULT '[]'
     );
+
+    CREATE TABLE IF NOT EXISTS sync_gaps (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      registrationNo TEXT NOT NULL,
+      gapStart DATETIME NOT NULL,
+      gapEnd DATETIME NOT NULL,
+      missedMinutes INTEGER NOT NULL DEFAULT 0,
+      filled INTEGER NOT NULL DEFAULT 0,
+      detectedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sync_gaps_registration ON sync_gaps(registrationNo, detectedAt DESC);
+    CREATE INDEX IF NOT EXISTS idx_sync_gaps_detected ON sync_gaps(detectedAt DESC);
   `);
 
   ensureColumn(db, 'devices', 'deviceNo', 'deviceNo INTEGER');

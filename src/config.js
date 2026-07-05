@@ -96,6 +96,9 @@ export const config = Object.freeze({
   // Circuit breaker: ketma-ket N ta nosozlikdan keyin SolaX'ga ulanishni M vaqtga to'xtatamiz
   solaxCircuitFailureThreshold: Math.max(1, toInt(process.env.SOLAX_CIRCUIT_FAILURE_THRESHOLD, 5)),
   solaxCircuitOpenMs: Math.max(30000, toInt(process.env.SOLAX_CIRCUIT_OPEN_MS, 5 * 60 * 1000)),
+  // Gap detection: ma'lumot bo'shlig'ini aniqlash (oxirgi yig'ilishdan shuncha o'tsa gap deb belgilaymiz)
+  syncGapDetectionEnabled: toBool(process.env.SYNC_GAP_DETECTION_ENABLED, true),
+  syncGapMinMs: Math.max(60000, toInt(process.env.SYNC_GAP_MIN_MS, 15 * 60 * 1000)),
   // Quvvat keskin tushishi haqida ogohlantirish (egasi + adminlarga)
   powerDropAlertEnabled: toBool(process.env.POWER_DROP_ALERT_ENABLED, true),
   powerDropRatio: Math.min(1, Math.max(0.1, toFloat(process.env.POWER_DROP_RATIO, 0.6))),

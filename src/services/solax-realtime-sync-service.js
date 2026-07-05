@@ -8,6 +8,7 @@ import {
 } from './device-service.js';
 import { getSetting, setSetting } from './settings-service.js';
 import { CircuitBreaker } from './circuit-breaker.js';
+import { recordGapIfAny, getSyncGapSummary } from './gap-detection-service.js';
 
 const SOLAX_REALTIME_SOURCE = 'solax-realtime-api';
 const MAX_REPORTED_ERRORS = 20;
@@ -303,6 +304,9 @@ async function syncRealtimeTarget(target, summary, syncedAt) {
       source: SOLAX_REALTIME_SOURCE,
     });
 
+    // Ma'lumot bo'shlig'ini (gap) aniqlash va qayd etish — tez DB amali, inline
+    recordGapIfAny(saveResult, getRealtimeIntervalMs());
+
     // Quvvat keskin tushishini tekshirish (egasi + adminlarga xabar) — sync'ni bloklamaydi
     import('./power-alert-service.js')
       .then(({ checkAndNotifyPowerDrop }) => checkAndNotifyPowerDrop(saveResult))
@@ -512,6 +516,7 @@ export function getSolaxRealtimeSyncState() {
     ...schedulerState,
     minIntervalMs: MIN_SOLAX_REALTIME_INTERVAL_MS,
     circuit: solaxBreaker.getState(),
+    gaps: getSyncGapSummary(),
   };
 }
 

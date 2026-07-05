@@ -1794,10 +1794,11 @@ export function saveDeviceRealtimeStats({
     yieldYear: 0,
   };
 
-  // Yangilashdan OLDINGI holatni o'qib olamiz — quvvat keskin tushishini aniqlash uchun
+  // Yangilashdan OLDINGI holatni o'qib olamiz — quvvat keskin tushishi va
+  // ma'lumot bo'shlig'ini (gap) aniqlash uchun.
   const prevRow = db
     .prepare(
-      'SELECT acPower, ratedPower, telegramIds, deviceName, plantName, userName FROM devices WHERE registrationNo = ?',
+      'SELECT acPower, ratedPower, telegramIds, deviceName, plantName, userName, lastCheckedAt FROM devices WHERE registrationNo = ?',
     )
     .get(cleanRegistrationNo);
 
@@ -1982,6 +1983,7 @@ export function saveDeviceRealtimeStats({
     snapshotMinute,
     acPower: nextAcPower,
     previousAcPower: prevRow ? toNumberOrNull(prevRow.acPower) : null,
+    previousCollectedAt: prevRow?.lastCheckedAt ?? null,
     ratedPower: toNumberOrNull(ratedPower) ?? (prevRow ? toNumberOrNull(prevRow.ratedPower) : null),
     telegramIds: prevRow?.telegramIds ?? '[]',
     deviceName: prevRow?.deviceName ?? null,
