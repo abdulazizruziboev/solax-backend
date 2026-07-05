@@ -1,4 +1,5 @@
 import { getDb } from '../db.js';
+import { config } from '../config.js';
 import { DEVICE_STATUSES } from '../constants.js';
 import { AppError } from '../middleware/errors.js';
 import { getSetting, setSetting } from './settings-service.js';
@@ -1120,16 +1121,20 @@ export function getDeviceTotals() {
     FROM devices
   `).all();
 
+  // "Online" ni SolaX kabi — qurilmaning oxirgi ma'lumot yuklash vaqti (realtimeUpdatedAt)
+  // belgilangan oynada bo'lsa online deб sanaymiz. Bu har so'rovda qayta hisoblanadi,
+  // shuning uchun eskirган status sonni ko'paytirib yubormaydi va SolaX bilan mos keladi.
+  const onlineCutoff = toSqlDateTime(Date.now() - config.solaxRealtimeOnlineThresholdMs);
+
   const totals = devices.reduce(
     (summary, device) => {
       summary.totalDevices += 1;
 
-      if (device.onlineStatus === 'Online') {
+      const isOnline = Boolean(device.realtimeUpdatedAt) && device.realtimeUpdatedAt >= onlineCutoff;
+      if (isOnline) {
         summary.onlineDevices += 1;
-      } else if (device.onlineStatus === 'Offline') {
-        summary.offlineDevices += 1;
       } else {
-        summary.unknownDevices += 1;
+        summary.offlineDevices += 1;
       }
 
       summary.totalAcPower += normalisePowerValue(device.acPower) ?? 0;

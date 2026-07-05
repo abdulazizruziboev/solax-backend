@@ -88,9 +88,12 @@ export const config = Object.freeze({
     5000,
     toInt(process.env.SOLAX_REALTIME_REQUEST_TIMEOUT_MS, 15000),
   ),
+  // "Online" oynasi: qurilma shu vaqt ichida SolaX'ga ma'lumot yuklagan bo'lsa online.
+  // 40-60 daqiqa oralig'i SolaX Cloud'ning online sanog'iga aynan mos keladi
+  // (polling kechikishini hisobga olib 45 daqiqa - barqaror "plato" markazi).
   solaxRealtimeOnlineThresholdMs: Math.max(
     60000,
-    toInt(process.env.SOLAX_REALTIME_ONLINE_THRESHOLD_MS, 30 * 60 * 1000),
+    toInt(process.env.SOLAX_REALTIME_ONLINE_THRESHOLD_MS, 45 * 60 * 1000),
   ),
   solaxRealtimeRunOnStart: toBool(process.env.SOLAX_REALTIME_RUN_ON_START, false),
   // Circuit breaker: ketma-ket N ta nosozlikdan keyin SolaX'ga ulanishni M vaqtga to'xtatamiz

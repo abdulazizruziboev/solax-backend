@@ -125,30 +125,24 @@ function getDateField(source, candidateKeys) {
   return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
 }
 
-function inferOnlineStatus(uploadedAt, inverterStatus) {
+// SolaX Cloud "online" ni qurilma OXIRGI MARTA ma'lumot yuklagan vaqti bo'yicha
+// aniqlaydi: yaqinda yuklagan bo'lsa — online, aks holda — offline.
+// Biz ham aynan shu mantiqni ishlatamiz (inverterStatus'ga tayanmaymiz, chunki
+// u eski qiymat bilan qolib "soxta online" berardi). Shu bilan sanog'imiz
+// SolaX'nikiga 1:1 mos keladi.
+function inferOnlineStatus(uploadedAt) {
   if (!uploadedAt) {
-    return 'Unknown';
+    return 'Offline';
   }
 
   const uploadedAtMs = new Date(uploadedAt).getTime();
   if (!Number.isFinite(uploadedAtMs)) {
-    return 'Unknown';
+    return 'Offline';
   }
 
-  const now = Date.now();
-  const diffMs = Math.abs(now - uploadedAtMs);
+  const diffMs = Math.abs(Date.now() - uploadedAtMs);
+  const thresholdMs = config.solaxRealtimeOnlineThresholdMs || 30 * 60 * 1000;
 
-  // SolaX inverterStatus: 101/102 are Normal/Wait (Online)
-  const statusStr = String(inverterStatus || '');
-  if (statusStr === '102' || statusStr === '101') {
-    return 'Online';
-  }
-
-  // If status is 103 (Fault), it might still be communicating, but let's see.
-  // Generally, if it's within 2 hours, we can call it Online (communicating)
-  // SolaX Cloud is very lenient with "Normal" status.
-  const thresholdMs = config.solaxRealtimeOnlineThresholdMs || (60 * 60 * 1000); // Default to 1 hour if not set
-  
   return diffMs <= thresholdMs ? 'Online' : 'Offline';
 }
 
@@ -185,7 +179,6 @@ function parseRealtimePayload(payload) {
     'timestamp',
     'lastUpdateTime',
   ]);
-  const inverterStatus = getCaseInsensitiveValue(result, ['inverterStatus', 'inverterstatus', 'status']);
   const realtime = {
     ratedPower: getNumberField(result, ['ratedPower', 'ratedpower']),
     acPower: getNumberField(result, [
@@ -215,7 +208,7 @@ function parseRealtimePayload(payload) {
       'energyTotal',
     ]),
     uploadedAt,
-    onlineStatus: inferOnlineStatus(uploadedAt, inverterStatus),
+    onlineStatus: inferOnlineStatus(uploadedAt),
   };
 
   if (realtime.acPower === null && realtime.yieldToday === null && realtime.yieldTotal === null) {
