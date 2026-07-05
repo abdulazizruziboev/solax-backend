@@ -8,6 +8,11 @@ function toInt(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function toFloat(value, fallback) {
+  const parsed = Number.parseFloat(value ?? '');
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function toList(value) {
   return String(value || '')
     .split(',')
@@ -88,6 +93,14 @@ export const config = Object.freeze({
     toInt(process.env.SOLAX_REALTIME_ONLINE_THRESHOLD_MS, 30 * 60 * 1000),
   ),
   solaxRealtimeRunOnStart: toBool(process.env.SOLAX_REALTIME_RUN_ON_START, false),
+  // Quvvat keskin tushishi haqida ogohlantirish (egasi + adminlarga)
+  powerDropAlertEnabled: toBool(process.env.POWER_DROP_ALERT_ENABLED, true),
+  powerDropRatio: Math.min(1, Math.max(0.1, toFloat(process.env.POWER_DROP_RATIO, 0.6))),
+  powerDropMinKw: Math.max(0, toFloat(process.env.POWER_DROP_MIN_KW, 1)),
+  powerDropRatedFraction: Math.min(1, Math.max(0, toFloat(process.env.POWER_DROP_RATED_FRACTION, 0.15))),
+  powerDropCooldownMinutes: Math.max(5, toInt(process.env.POWER_DROP_COOLDOWN_MINUTES, 180)),
+  powerDropActiveStartHour: Math.min(23, Math.max(0, toInt(process.env.POWER_DROP_ACTIVE_START_HOUR, 9))),
+  powerDropActiveEndHour: Math.min(24, Math.max(1, toInt(process.env.POWER_DROP_ACTIVE_END_HOUR, 17))),
   reportEodEnabled: toBool(process.env.REPORT_EOD_ENABLED, true),
   reportEodTime: /^\d{2}:\d{2}$/.test((process.env.REPORT_EOD_TIME || '').trim())
     ? (process.env.REPORT_EOD_TIME || '').trim()

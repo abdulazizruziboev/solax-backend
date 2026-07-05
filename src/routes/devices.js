@@ -24,10 +24,8 @@ import {
 import { getDeviceSyncState, runDeviceSyncNow } from '../services/device-sync-service.js';
 import {
   getSolaxRealtimeSyncState,
-  isSolaxQuotaError,
   runSolaxRealtimeSyncForDevice,
   runSolaxRealtimeSyncNow,
-  verifySolaxSerialNumber,
 } from '../services/solax-realtime-sync-service.js';
 
 const devicesRouter = Router();
@@ -175,33 +173,15 @@ devicesRouter.post(
       throw new AppError(400, 'serialNumber yuborilishi kerak');
     }
 
-    let device = findDeviceBySerial(serialNumber);
-    let created = false;
+    const device = findDeviceBySerial(serialNumber);
 
+    // Faqat bazada ro'yxatdan o'tgan qurilmalarni biriktirish mumkin.
+    // Bazada bo'lmasa — "bunday qurilma kiritilmagan" deb qaytaramiz.
     if (!device) {
-      try {
-        await verifySolaxSerialNumber(serialNumber);
-      } catch (error) {
-        console.error('[devices] SN tekshiruvi muvaffaqiyatsiz:', serialNumber, error.message);
-
-        if (error.code === 'SOLAX_TOKEN_MISSING' || isSolaxQuotaError(error)) {
-          throw new AppError(
-            503,
-            "Hozircha SN ni tekshirib bo'lmadi. Birozdan so'ng qayta urining.",
-          );
-        }
-
-        throw new AppError(
-          404,
-          "Bu seriya raqami bo'yicha qurilma topilmadi. SN ni tekshirib qayta urining.",
-        );
-      }
-
-      device = createDevice({
-        registrationNo: serialNumber,
-        source: 'user-claim',
-      });
-      created = true;
+      throw new AppError(
+        404,
+        "Bunday qurilma bazada topilmadi. Registration raqamni tekshiring yoki admin bilan bog'laning.",
+      );
     }
 
     const claimedDevice = claimDevice({
@@ -217,7 +197,7 @@ devicesRouter.post(
 
     res.status(201).json({
       ok: true,
-      created,
+      created: false,
       device: claimedDevice,
     });
   }),

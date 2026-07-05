@@ -268,7 +268,7 @@ function normaliseRegistrationNos(registrationNos) {
 async function syncRealtimeTarget(target, summary, syncedAt) {
   try {
     const realtime = await fetchRealtimeInfo(target.registrationNo);
-    saveDeviceRealtimeStats({
+    const saveResult = saveDeviceRealtimeStats({
       registrationNo: target.registrationNo,
       deviceSn: target.deviceSn,
       collectedAt: syncedAt,
@@ -280,6 +280,11 @@ async function syncRealtimeTarget(target, summary, syncedAt) {
       onlineStatus: realtime.onlineStatus,
       source: SOLAX_REALTIME_SOURCE,
     });
+
+    // Quvvat keskin tushishini tekshirish (egasi + adminlarga xabar) — sync'ni bloklamaydi
+    import('./power-alert-service.js')
+      .then(({ checkAndNotifyPowerDrop }) => checkAndNotifyPowerDrop(saveResult))
+      .catch(() => {});
 
     // SSE broadcast
     try {

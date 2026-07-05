@@ -1794,6 +1794,13 @@ export function saveDeviceRealtimeStats({
     yieldYear: 0,
   };
 
+  // Yangilashdan OLDINGI holatni o'qib olamiz — quvvat keskin tushishini aniqlash uchun
+  const prevRow = db
+    .prepare(
+      'SELECT acPower, ratedPower, telegramIds, deviceName, plantName, userName FROM devices WHERE registrationNo = ?',
+    )
+    .get(cleanRegistrationNo);
+
   db.exec('BEGIN');
 
   try {
@@ -1974,6 +1981,12 @@ export function saveDeviceRealtimeStats({
     month,
     snapshotMinute,
     acPower: nextAcPower,
+    previousAcPower: prevRow ? toNumberOrNull(prevRow.acPower) : null,
+    ratedPower: toNumberOrNull(ratedPower) ?? (prevRow ? toNumberOrNull(prevRow.ratedPower) : null),
+    telegramIds: prevRow?.telegramIds ?? '[]',
+    deviceName: prevRow?.deviceName ?? null,
+    plantName: prevRow?.plantName ?? null,
+    userName: prevRow?.userName ?? null,
     yieldToday: nextYieldToday,
     yieldMonth: roundChartValue(aggregate.yieldMonth),
     yieldYear: roundChartValue(aggregate.yieldYear),
