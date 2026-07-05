@@ -592,7 +592,7 @@ function buildRealtimeSyncInlineKeyboard() {
 }
 
 function buildRealtimeIntervalPromptInlineKeyboard() {
-  return [];
+  return [[{ text: '◀️ Orqaga', callback_data: 'rt:cancel' }]];
 }
 
 function buildDevicesInlineKeyboard(devices, page, totalPages) {
@@ -1446,6 +1446,11 @@ async function handleCallbackQuery(callbackQuery) {
         case 'custom':
           await editRealtimeIntervalPrompt(callbackQuery, callbackQuery.from.id, appUser);
           await answerCallbackQuery(callbackQuery.id, 'Custom interval');
+          return;
+        case 'cancel':
+          clearUserSession(callbackQuery.from.id);
+          await editRealtimeSyncMenu(callbackQuery, callbackQuery.from.id, appUser);
+          await answerCallbackQuery(callbackQuery.id, 'Bekor qilindi');
           return;
         case 'run': {
           await answerCallbackQuery(callbackQuery.id, 'Manual sync boshlandi');
