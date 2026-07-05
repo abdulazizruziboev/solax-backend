@@ -8,12 +8,6 @@ const UZBEKISTAN_PEAK_SUN_HOURS = Object.freeze({
   7: 7.5, 8: 6.8, 9: 5.8, 10: 4.5, 11: 3.2, 12: 2.5,
 });
 
-// Har bir oy uchun taxminiy radiatsiya (kWh/m²/day)
-const MONTHLY_IRRADIANCE = Object.freeze({
-  1: 2.2, 2: 2.8, 3: 3.8, 4: 4.8, 5: 5.8, 6: 6.5,
-  7: 6.8, 8: 6.0, 9: 5.0, 10: 3.8, 11: 2.6, 12: 2.0,
-});
-
 // Samaradorlik chegaralari
 const EFFICIENCY_THRESHOLDS = Object.freeze({
   excellent: 85,
@@ -23,14 +17,21 @@ const EFFICIENCY_THRESHOLDS = Object.freeze({
   critical: 0,
 });
 
-function getPeakSunHours(dateText) {
-  const month = Number.parseInt(dateText.slice(5, 7), 10);
-  return UZBEKISTAN_PEAK_SUN_HOURS[month] ?? 5.0;
-}
+// Sana oralig'idagi har bir kunning o'z oyiga mos quyoshli soatini olib,
+// kunlar soniga qarab tortilgan (weighted) o'rtachani hisoblaydi. Oddiy
+// "oylar to'plami bo'yicha o'rtacha" emas - aks holda masalan 25 kun
+// dekabr + 5 kun yanvar oralig'ida ikkala oy 50/50 vazn olib, natija
+// noto'g'ri siljib ketardi.
+function getAveragePeakSunHours(startDate, endDate) {
+  let totalHours = 0;
+  let dayCount = 0;
 
-function getMonthlyIrradiance(dateText) {
-  const month = Number.parseInt(dateText.slice(5, 7), 10);
-  return MONTHLY_IRRADIANCE[month] ?? 4.0;
+  for (let d = new Date(startDate); d <= new Date(endDate); d.setDate(d.getDate() + 1)) {
+    totalHours += UZBEKISTAN_PEAK_SUN_HOURS[d.getMonth() + 1] ?? 5.0;
+    dayCount += 1;
+  }
+
+  return dayCount > 0 ? totalHours / dayCount : 5.0;
 }
 
 function calculateEfficiencyScore(actualYield, ratedPower, peakSunHours) {
@@ -173,6 +174,9 @@ export function getDeviceEfficiency({
   // O'rtacha kunlar soni (efficiency hisoblash uchun)
   const spanDays = Math.round((new Date(cleanEndDate).getTime() - new Date(cleanStartDate).getTime()) / 86400000) + 1;
 
+  // Butun sana oralig'i uchun bir marta hisoblanadi (har bir qurilma uchun emas)
+  const avgPeakSunHours = getAveragePeakSunHours(cleanStartDate, cleanEndDate);
+
   // Har bir qurilma uchun samaradorlik
   const deviceResults = devices.map((device) => {
     const stats = statsByDevice.get(device.registrationNo);
@@ -180,20 +184,6 @@ export function getDeviceEfficiency({
     const activeDays = stats?.activeDays ?? 0;
     const bestDayYield = stats?.bestDayYield ?? 0;
     const avgDailyYield = stats?.avgDailyYield ?? 0;
-
-    // O'rtacha quyoshli soat (sana oralig'iga qarab)
-    const startMonth = Number.parseInt(cleanStartDate.slice(5, 7), 10);
-    const endMonth = Number.parseInt(cleanEndDate.slice(5, 7), 10);
-    let avgPeakSunHours = 0;
-    if (startMonth === endMonth) {
-      avgPeakSunHours = getPeakSunHours(cleanStartDate);
-    } else {
-      const months = new Set();
-      for (let d = new Date(cleanStartDate); d <= new Date(cleanEndDate); d.setDate(d.getDate() + 1)) {
-        months.add(d.getMonth() + 1);
-      }
-      avgPeakSunHours = [...months].reduce((sum, m) => sum + (UZBEKISTAN_PEAK_SUN_HOURS[m] ?? 5), 0) / months.size;
-    }
 
     // Samaradorlik
     const efficiencyScore = calculateEfficiencyScore(
