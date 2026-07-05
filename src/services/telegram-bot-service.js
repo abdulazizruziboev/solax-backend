@@ -28,7 +28,7 @@ const BUTTONS = Object.freeze({
 const BOT_COMMANDS = [
   { command: 'start', description: 'Botni ishga tushirish' },
   { command: 'sync', description: 'Quvvat sync sozlamalari' },
-  { command: 'interval', description: 'Custom quvvat sync interval' },
+  { command: 'interval', description: "Maxsus sinxronlash oralig'i" },
 ];
 
 const state = {
@@ -582,7 +582,7 @@ function buildRealtimeSyncInlineKeyboard() {
 
   const rows = [
     ...intervalRows,
-    [{ text: 'Custom interval', callback_data: 'rt:custom' }],
+    [{ text: 'Maxsus interval', callback_data: 'rt:custom' }],
     [
       { text: 'Hozir sync', callback_data: 'rt:run' },
       { text: 'Yangilash', callback_data: 'rt:refresh' },
@@ -754,7 +754,7 @@ function buildRealtimeIntervalPromptText() {
   const state = getSolaxRealtimeSyncState();
 
   return [
-    '<b>Custom quvvat sync interval</b>',
+    "<b>Maxsus sinxronlash oralig'i</b>",
     formatTelegramField('Joriy interval', formatDurationMs(state.intervalMs)),
     formatTelegramField('Minimal interval', formatDurationMs(state.minIntervalMs)),
     '',
@@ -1550,7 +1550,7 @@ async function handleCallbackQuery(callbackQuery) {
           return;
         case 'custom':
           await editRealtimeIntervalPrompt(callbackQuery, callbackQuery.from.id, appUser);
-          await answerCallbackQuery(callbackQuery.id, 'Custom interval');
+          await answerCallbackQuery(callbackQuery.id, 'Maxsus interval');
           return;
         case 'cancel':
           clearUserSession(callbackQuery.from.id);
