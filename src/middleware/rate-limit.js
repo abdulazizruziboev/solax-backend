@@ -1,9 +1,12 @@
 import { rateLimit } from 'express-rate-limit';
 
-// Umumiy API rate limit — 100 so'rov / 15 daqiqa
+// Umumiy API rate limit — DoS'dan himoya, real foydalanuvchi trafigiga
+// halaqit bermasligi kerak (WebApp 30 soniyada bir necha so'rov yuboradi,
+// va ngrok/Netlify orqali ko'p foydalanuvchi bitta IP ostida ko'rinishi
+// mumkin, shuning uchun chegara yuqori qo'yilgan).
 export const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 2000,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -35,10 +38,10 @@ export const loginLimiter = rateLimit({
   skipSuccessfulRequests: true,
 });
 
-// Auth qilingan API uchun — 200 so'rov / 15 daqiqa
+// Auth qilingan API uchun — har bir foydalanuvchi uchun alohida hisoblanadi
 export const authApiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 200,
+  max: 1500,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
