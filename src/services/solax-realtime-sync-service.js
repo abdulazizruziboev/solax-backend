@@ -7,6 +7,7 @@ import {
   saveDeviceRealtimeStats,
 } from './device-service.js';
 import { getSetting, setSetting } from './settings-service.js';
+import { CircuitBreaker } from './circuit-breaker.js';
 
 const SOLAX_REALTIME_SOURCE = 'solax-realtime-api';
 const MAX_REPORTED_ERRORS = 20;
@@ -17,6 +18,14 @@ const SCHEDULE_RECHECK_MS = 60 * 1000;
 let schedulerStarted = false;
 let schedulerTimer = null;
 let activeRunPromise = null;
+
+const solaxBreaker = new CircuitBreaker({
+  name: 'solax-api',
+  failureThreshold: config.solaxCircuitFailureThreshold,
+  openMs: config.solaxCircuitOpenMs,
+});
+
+const CIRCUIT_OPEN_CODE = 'CIRCUIT_OPEN';
 
 const schedulerState = {
   enabled: config.solaxRealtimeSyncEnabled && Boolean(config.solaxRealtimeTokenId),
@@ -266,8 +275,21 @@ function normaliseRegistrationNos(registrationNos) {
 }
 
 async function syncRealtimeTarget(target, summary, syncedAt) {
+  // Circuit ochiq bo'lsa — SolaX'ga urinmaymiz. Bazadagi (keshdagi) eng oxirgi
+  // qiymat o'zgarishsiz qoladi va frontend o'shani ko'rsatishda davom etadi.
+  if (!solaxBreaker.canAttempt()) {
+    summary.skipped += 1;
+    summary.processed += 1;
+    summary.circuitOpen = true;
+    const error = new Error("SolaX vaqtincha ishlamayapti (circuit ochiq)");
+    error.code = CIRCUIT_OPEN_CODE;
+    throw error;
+  }
+
   try {
     const realtime = await fetchRealtimeInfo(target.registrationNo);
+    solaxBreaker.recordSuccess();
+
     const saveResult = saveDeviceRealtimeStats({
       registrationNo: target.registrationNo,
       deviceSn: target.deviceSn,
@@ -306,9 +328,14 @@ async function syncRealtimeTarget(target, summary, syncedAt) {
     pushSummaryError(summary, target, error);
 
     if (isQuotaError(error)) {
+      // Quota — bu vaqtinchalik kunlik limit, xizmat nosozligi emas.
+      // Circuit'ni ochmaymiz, faqat navbatdagi urinishlarni to'xtatamiz.
       summary.quotaLimited = true;
       throw error;
     }
+
+    // Haqiqiy nosozlik (timeout, 5xx, tarmoq) — circuit breaker'ga yozamiz
+    solaxBreaker.recordFailure();
   } finally {
     summary.processed += 1;
   }
@@ -328,6 +355,7 @@ async function executeTargetsSync(trigger, targets, { requestedTargets = targets
     failed: 0,
     skipped,
     quotaLimited: false,
+    circuitOpen: false,
     errors: [],
   };
 
@@ -342,6 +370,14 @@ async function executeTargetsSync(trigger, targets, { requestedTargets = targets
         await syncRealtimeTarget(target, summary, startedAt);
       } catch (error) {
         if (isQuotaError(error)) {
+          summary.skipped += targets.length - index - 1;
+          break;
+        }
+
+        // Circuit ochilib ketdi — qolgan qurilmalarni ham urinmaymiz, keshdagi
+        // ma'lumot bilan ishlashda davom etamiz (SolaX'ni bo'shatib qo'yamiz).
+        if (error.code === CIRCUIT_OPEN_CODE) {
+          summary.circuitOpen = true;
           summary.skipped += targets.length - index - 1;
           break;
         }
@@ -475,6 +511,7 @@ export function getSolaxRealtimeSyncState() {
   return {
     ...schedulerState,
     minIntervalMs: MIN_SOLAX_REALTIME_INTERVAL_MS,
+    circuit: solaxBreaker.getState(),
   };
 }
 

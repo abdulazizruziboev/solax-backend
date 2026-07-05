@@ -415,6 +415,8 @@ export function getDb() {
   dbInstance.exec(`
     PRAGMA foreign_keys = ON;
     PRAGMA journal_mode = WAL;
+    PRAGMA synchronous = NORMAL;
+    PRAGMA busy_timeout = 5000;
   `);
 
   bootstrapDatabase(dbInstance);

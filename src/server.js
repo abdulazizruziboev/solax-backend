@@ -10,6 +10,7 @@ import {
   stopSolaxRealtimeSyncScheduler,
 } from './services/solax-realtime-sync-service.js';
 import { startBackupScheduler, stopBackupScheduler, createBackup } from './services/backup-service.js';
+import { startTelegramBot, stopTelegramBot } from './services/telegram-bot-service.js';
 
 if (config.isDefaultJwtSecret) {
   console.warn("[security] JWT_SECRET default qiymatda turibdi. Productionda o'zgartiring.");
@@ -25,6 +26,12 @@ const server = app.listen(config.port, config.host, async () => {
   await startSolaxRealtimeSyncScheduler();
   startDailyReportScheduler();
   startBackupScheduler();
+
+  try {
+    await startTelegramBot();
+  } catch (error) {
+    console.error('[telegram-bot] Server ichida ishga tushmadi:', error.message);
+  }
 });
 
 async function shutdown(signal) {
@@ -33,6 +40,12 @@ async function shutdown(signal) {
   stopSolaxRealtimeSyncScheduler();
   stopDailyReportScheduler();
   stopBackupScheduler();
+
+  try {
+    await stopTelegramBot();
+  } catch (error) {
+    console.error('[telegram-bot] Shutdown xatosi:', error.message);
+  }
 
   try {
     await createBackup();

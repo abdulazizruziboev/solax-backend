@@ -93,6 +93,9 @@ export const config = Object.freeze({
     toInt(process.env.SOLAX_REALTIME_ONLINE_THRESHOLD_MS, 30 * 60 * 1000),
   ),
   solaxRealtimeRunOnStart: toBool(process.env.SOLAX_REALTIME_RUN_ON_START, false),
+  // Circuit breaker: ketma-ket N ta nosozlikdan keyin SolaX'ga ulanishni M vaqtga to'xtatamiz
+  solaxCircuitFailureThreshold: Math.max(1, toInt(process.env.SOLAX_CIRCUIT_FAILURE_THRESHOLD, 5)),
+  solaxCircuitOpenMs: Math.max(30000, toInt(process.env.SOLAX_CIRCUIT_OPEN_MS, 5 * 60 * 1000)),
   // Quvvat keskin tushishi haqida ogohlantirish (egasi + adminlarga)
   powerDropAlertEnabled: toBool(process.env.POWER_DROP_ALERT_ENABLED, true),
   powerDropRatio: Math.min(1, Math.max(0.1, toFloat(process.env.POWER_DROP_RATIO, 0.6))),
