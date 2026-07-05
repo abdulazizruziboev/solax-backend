@@ -5,6 +5,7 @@ import { config } from '../config.js';
 import { getDb } from '../db.js';
 import {
   getSolaxRealtimeSyncState,
+  getSyncLiveProgress,
   runSolaxRealtimeSyncNow,
   setSolaxRealtimeSyncIntervalMs,
 } from './solax-realtime-sync-service.js';
@@ -586,6 +587,7 @@ function buildRealtimeSyncInlineKeyboard() {
       { text: 'Hozir sync', callback_data: 'rt:run' },
       { text: 'Yangilash', callback_data: 'rt:refresh' },
     ],
+    [{ text: '⬅️ Bosh menyu', callback_data: 'm:home' }],
   ];
 
   return rows;
@@ -703,16 +705,42 @@ function buildRealtimeSyncText(notice = null) {
     lines.unshift(escapeTelegramHtml(notice), '');
   }
 
+  // Jonli progress — hozir sync ketayotgan bo'lsa qaysi qurilma ishlanayotgani
+  const progress = getSyncLiveProgress();
+  if (progress.running) {
+    const pct = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
+    lines.push('');
+    lines.push('<b>🔄 Hozir sinxronlanmoqda...</b>');
+    lines.push(`📊 ${progress.current}/${progress.total} (${pct}%)`);
+    lines.push(`✅ ${progress.succeeded}  ❌ ${progress.failed}`);
+    if (progress.currentDevice) {
+      lines.push(`🔌 Joriy qurilma: ${formatTelegramCode(progress.currentDevice)}`);
+    }
+  }
+
   if (lastSummary) {
     lines.push('');
     lines.push('<b>Oxirgi natija:</b>');
     lines.push(`- Qayta ishlandi: ${escapeTelegramHtml(lastSummary.processed ?? 0)}/${escapeTelegramHtml(lastSummary.totalTargets ?? 0)}`);
-    lines.push(`- Muvaffaqiyatli: ${escapeTelegramHtml(lastSummary.succeeded ?? 0)}`);
-    lines.push(`- Muvaffaqiyatsiz: ${escapeTelegramHtml(lastSummary.failed ?? 0)}`);
+    lines.push(`- <tg-emoji emoji-id="5427009714745517756">✅</tg-emoji> Muvaffaqiyatli: ${escapeTelegramHtml(lastSummary.succeeded ?? 0)}`);
+    lines.push(`- <tg-emoji emoji-id="5465665476971471368">❌</tg-emoji> Muvaffaqiyatsiz: ${escapeTelegramHtml(lastSummary.failed ?? 0)}`);
     lines.push(`- O'tkazib yuborildi: ${escapeTelegramHtml(lastSummary.skipped ?? 0)}`);
 
     if (lastSummary.quotaLimited) {
       lines.push('- SolaX limitga tushgan');
+    }
+
+    // Muvaffaqiyatsiz qurilmalar ro'yxati
+    const errors = Array.isArray(lastSummary.errors) ? lastSummary.errors : [];
+    if (errors.length > 0) {
+      lines.push('');
+      lines.push('<b>Xato bergan qurilmalar:</b>');
+      for (const err of errors.slice(0, 10)) {
+        lines.push(`• ${formatTelegramCode(err.registrationNo || '-')} — ${escapeTelegramHtml(err.message || 'xato')}`);
+      }
+      if (errors.length > 10) {
+        lines.push(`... va yana ${errors.length - 10} ta`);
+      }
     }
   }
 
@@ -1223,19 +1251,65 @@ async function handleRealtimeIntervalInput(message, appUser, input) {
 }
 
 function notifyRealtimeSyncResult(chatId, summary) {
-  return sendTelegramMessage(
-    chatId,
-    [
-      '<b>Quvvat sync yakunlandi.</b>',
-      `Processed: ${escapeTelegramHtml(summary.processed ?? 0)}/${escapeTelegramHtml(summary.totalTargets ?? 0)}`,
-      `Succeeded: ${escapeTelegramHtml(summary.succeeded ?? 0)}`,
-      `Failed: ${escapeTelegramHtml(summary.failed ?? 0)}`,
-      `Skipped: ${escapeTelegramHtml(summary.skipped ?? 0)}`,
-      summary.quotaLimited ? 'SolaX limitga tushgan.' : null,
-    ]
-      .filter(Boolean)
-      .join('\n'),
-  );
+  const errors = Array.isArray(summary?.errors) ? summary.errors : [];
+  const lines = [
+    '<b><tg-emoji emoji-id="5843799474362652262">🔄</tg-emoji> Quvvat sync yakunlandi</b>',
+    `<tg-emoji emoji-id="5877318502947229960">💻</tg-emoji> Qayta ishlandi: ${escapeTelegramHtml(summary.processed ?? 0)}/${escapeTelegramHtml(summary.totalTargets ?? 0)}`,
+    `<tg-emoji emoji-id="5427009714745517756">✅</tg-emoji> Muvaffaqiyatli: ${escapeTelegramHtml(summary.succeeded ?? 0)}`,
+    `<tg-emoji emoji-id="5465665476971471368">❌</tg-emoji> Muvaffaqiyatsiz: ${escapeTelegramHtml(summary.failed ?? 0)}`,
+    `⏭ O'tkazib yuborildi: ${escapeTelegramHtml(summary.skipped ?? 0)}`,
+    summary.quotaLimited ? 'SolaX kunlik limitga tushgan.' : null,
+  ].filter(Boolean);
+
+  if (errors.length > 0) {
+    lines.push('');
+    lines.push('<b>Xato bergan qurilmalar:</b>');
+    for (const err of errors.slice(0, 15)) {
+      lines.push(`• ${formatTelegramCode(err.registrationNo || '-')} — ${escapeTelegramHtml(err.message || 'xato')}`);
+    }
+    if (errors.length > 15) {
+      lines.push(`... va yana ${errors.length - 15} ta`);
+    }
+  }
+
+  return sendTelegramMessage(chatId, lines.join('\n'));
+}
+
+// Sync jarayonining jonli progressini xuddi shu xabarni yangilab ko'rsatadi.
+const activeSyncStreams = new Set();
+
+async function streamRealtimeSyncProgress(chatId, messageId, telegramUserId, appUser) {
+  const key = `${chatId}:${messageId}`;
+  if (activeSyncStreams.has(key)) {
+    return;
+  }
+  activeSyncStreams.add(key);
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const MAX_TICKS = 45; // ~3 daqiqa (4s * 45)
+
+  try {
+    await sleep(1500); // sync boshlanishini kutamiz
+    let prevText = '';
+
+    for (let tick = 0; tick < MAX_TICKS; tick += 1) {
+      const progress = getSyncLiveProgress();
+      const text = buildRealtimeSyncText(progress.running ? null : 'Sync yakunlandi.');
+
+      if (text !== prevText) {
+        await editTelegramMessage(chatId, messageId, text, buildRealtimeSyncInlineKeyboard()).catch(() => null);
+        prevText = text;
+      }
+
+      if (!progress.running && tick > 0) {
+        break;
+      }
+
+      await sleep(4000);
+    }
+  } finally {
+    activeSyncStreams.delete(key);
+  }
 }
 
 function buildSearchPromptText() {
@@ -1438,6 +1512,11 @@ async function handleCallbackQuery(callbackQuery) {
           await editRealtimeSyncMenu(callbackQuery, callbackQuery.from.id, appUser);
           await answerCallbackQuery(callbackQuery.id, 'Quvvat sync sozlamalari');
           return;
+        case 'home':
+          clearUserSession(callbackQuery.from.id);
+          await editHomeMenu(callbackQuery, callbackQuery.from.id, appUser);
+          await answerCallbackQuery(callbackQuery.id, 'Bosh menyu');
+          return;
         default:
           await answerCallbackQuery(callbackQuery.id, 'Noma lum amal');
           return;
@@ -1479,16 +1558,21 @@ async function handleCallbackQuery(callbackQuery) {
           await answerCallbackQuery(callbackQuery.id, 'Bekor qilindi');
           return;
         case 'run': {
-          await answerCallbackQuery(callbackQuery.id, 'Manual sync boshlandi');
-          await editRealtimeSyncMenu(callbackQuery, callbackQuery.from.id, appUser, 'Manual sync boshlandi.');
+          await answerCallbackQuery(callbackQuery.id, 'Sync boshlandi');
+          const chatId = callbackQuery.message.chat.id;
+          const messageId = callbackQuery.message.message_id;
+
           runSolaxRealtimeSyncNow('telegram-bot')
-            .then((summary) => notifyRealtimeSyncResult(callbackQuery.message.chat.id, summary))
+            .then((summary) => notifyRealtimeSyncResult(chatId, summary))
             .catch((error) =>
               sendTelegramMessage(
-                callbackQuery.message.chat.id,
+                chatId,
                 `<b>Quvvat sync xatosi:</b> ${escapeTelegramHtml(error.message)}`,
               ).catch(() => null),
             );
+
+          // Jonli progress'ni shu xabarni yangilab ko'rsatamiz
+          streamRealtimeSyncProgress(chatId, messageId, callbackQuery.from.id, appUser).catch(() => null);
           return;
         }
         default:

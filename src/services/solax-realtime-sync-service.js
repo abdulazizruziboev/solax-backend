@@ -28,6 +28,23 @@ const solaxBreaker = new CircuitBreaker({
 
 const CIRCUIT_OPEN_CODE = 'CIRCUIT_OPEN';
 
+// Jonli progress — sync paytida qaysi qurilma ishlanayotganini kuzatish uchun.
+const liveProgress = {
+  running: false,
+  trigger: null,
+  current: 0,
+  total: 0,
+  succeeded: 0,
+  failed: 0,
+  currentDevice: null,
+  startedAt: null,
+  finishedAt: null,
+};
+
+export function getSyncLiveProgress() {
+  return { ...liveProgress };
+}
+
 const schedulerState = {
   enabled: config.solaxRealtimeSyncEnabled && Boolean(config.solaxRealtimeTokenId),
   intervalMs: config.solaxRealtimeSyncIntervalMs,
@@ -359,9 +376,23 @@ async function executeTargetsSync(trigger, targets, { requestedTargets = targets
   schedulerState.isRunning = true;
   schedulerState.lastRunAt = startedAt;
 
+  liveProgress.running = true;
+  liveProgress.trigger = trigger;
+  liveProgress.total = targets.length;
+  liveProgress.current = 0;
+  liveProgress.succeeded = 0;
+  liveProgress.failed = 0;
+  liveProgress.currentDevice = null;
+  liveProgress.startedAt = startedAt;
+  liveProgress.finishedAt = null;
+
   try {
     for (let index = 0; index < targets.length; index += 1) {
       const target = targets[index];
+
+      // Progress: shu qurilma hozir ishlanmoqda
+      liveProgress.current = index + 1;
+      liveProgress.currentDevice = target.registrationNo;
 
       try {
         await syncRealtimeTarget(target, summary, startedAt);
@@ -379,6 +410,9 @@ async function executeTargetsSync(trigger, targets, { requestedTargets = targets
           break;
         }
       }
+
+      liveProgress.succeeded = summary.succeeded;
+      liveProgress.failed = summary.failed;
 
       if (config.solaxRealtimeRequestDelayMs > 0 && index < targets.length - 1) {
         await delay(config.solaxRealtimeRequestDelayMs);
@@ -402,6 +436,9 @@ async function executeTargetsSync(trigger, targets, { requestedTargets = targets
     throw error;
   } finally {
     schedulerState.isRunning = false;
+    liveProgress.running = false;
+    liveProgress.currentDevice = null;
+    liveProgress.finishedAt = new Date().toISOString();
     activeRunPromise = null;
   }
 }
