@@ -1251,6 +1251,20 @@ async function handleRealtimeIntervalInput(message, appUser, input) {
 }
 
 function notifyRealtimeSyncResult(chatId, summary) {
+  // Sync o'chirilgan yoki token yo'q — chalkash "0/0" o'rniga aniq xabar
+  if (!summary || summary.enabled === false) {
+    return sendTelegramMessage(chatId, "<tg-emoji emoji-id=\"5872829476143894491\">🚫</tg-emoji> Quvvat sync o'chirilgan yoki SolaX token sozlanmagan.");
+  }
+
+  // Ushbu chaqiruvda hech narsa qayta ishlanmadi (boshqa sinxronlash allaqachon
+  // davom etmoqda yoki qurilma yo'q) — foydalanuvchini chalkashtirmaymiz
+  if ((summary.totalTargets ?? 0) === 0 && (summary.processed ?? 0) === 0) {
+    return sendTelegramMessage(
+      chatId,
+      "<tg-emoji emoji-id=\"5843799474362652262\">🔄</tg-emoji> Sinxronlash allaqachon fonda davom etmoqda. Natijani ko'rish uchun \"Yangilash\" tugmasidan foydalaning.",
+    );
+  }
+
   const errors = Array.isArray(summary?.errors) ? summary.errors : [];
   const lines = [
     '<b><tg-emoji emoji-id="5843799474362652262">🔄</tg-emoji> Quvvat sync yakunlandi</b>',
