@@ -1825,8 +1825,8 @@ export function saveDeviceRealtimeStats({
       )
       VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(registrationNo, date) DO UPDATE SET
-        yieldToday = MAX(daily_stats.yieldToday, excluded.yieldToday),
-        yieldTotal = MAX(daily_stats.yieldTotal, excluded.yieldTotal),
+        yieldToday = COALESCE(excluded.yieldToday, daily_stats.yieldToday),
+        yieldTotal = COALESCE(excluded.yieldTotal, daily_stats.yieldTotal),
         acPower = excluded.acPower,
         updatedAt = excluded.updatedAt
     `).run(cleanRegistrationNo, date, nextYieldToday, nextYieldTotal, nextAcPower, realtimeUpdatedAtSql);
