@@ -1110,9 +1110,47 @@ function getNextDeviceNo() {
   return row.nextDeviceNo;
 }
 
+// SolaX'ning bepul realtime API'si tarixiy (yanvar-iyun kabi o'tgan davr)
+// ma'lumot bermaydi, shuning uchun "Ushbu oy"/"Ushbu yil" o'z boshidan
+// (backend hali barqaror ishlamagan davrlarda) to'liq yig'ilmagan bo'lishi
+// mumkin. Bu — bir martalik kalibrlash: joriy tabiiy yig'indiga ustiga
+// qo'yiladigan sobit "tuzatish" qiymati, SolaX Cloud'даgi haqiqiy raqamga
+// moslash uchun. Oy/yil almashganda tegishli tuzatish o'zi nolланади
+// (chunki `month`/`year` mos kelmay qoladi); "Umumiy" esa umriy ko'rsatkich
+// bo'lgani uchun doimiy qo'llanadi.
+const YIELD_CALIBRATION_SETTING_KEY = 'yieldCalibration';
+
+function getYieldCalibration() {
+  const raw = getSetting(YIELD_CALIBRATION_SETTING_KEY, null);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export function setYieldCalibration({ month, monthOffsetKWh, year, yearOffsetKWh, totalOffsetKWh }) {
+  const calibration = {
+    month: month ?? null,
+    monthOffsetKWh: Number(monthOffsetKWh) || 0,
+    year: year ?? null,
+    yearOffsetKWh: Number(yearOffsetKWh) || 0,
+    totalOffsetKWh: Number(totalOffsetKWh) || 0,
+    setAt: new Date().toISOString(),
+  };
+  setSetting(YIELD_CALIBRATION_SETTING_KEY, JSON.stringify(calibration));
+  return calibration;
+}
+
 export function getDeviceTotals() {
   const db = getDb();
   const statsPeriod = getCurrentStatsPeriod();
+  const calibration = getYieldCalibration();
+  const currentYear = statsPeriod.date.slice(0, 4);
+  const monthOffsetKWh = calibration && calibration.month === statsPeriod.month ? calibration.monthOffsetKWh : 0;
+  const yearOffsetKWh = calibration && calibration.year === currentYear ? calibration.yearOffsetKWh : 0;
+  const totalOffsetKWh = calibration ? calibration.totalOffsetKWh : 0;
   const devices = db.prepare(`
     SELECT
       onlineStatus,
@@ -1207,9 +1245,9 @@ export function getDeviceTotals() {
     errorDevices: totals.unknownDevices ?? 0,
     totalAcPower: roundChartValue(totals.totalAcPower),
     totalYieldToday: getDailyEnergyTotal(db, statsPeriod.date),
-    totalYieldMonth: roundChartValue(totalYieldMonth ?? 0),
-    totalYieldYear: roundChartValue(totalYieldYear ?? 0),
-    totalYieldTotal: roundChartValue(totalYieldTotal ?? 0),
+    totalYieldMonth: roundChartValue((totalYieldMonth ?? 0) + monthOffsetKWh),
+    totalYieldYear: roundChartValue((totalYieldYear ?? 0) + yearOffsetKWh),
+    totalYieldTotal: roundChartValue((totalYieldTotal ?? 0) + totalOffsetKWh),
     totalPlants: totalPlants ?? 0,
     statsDate: statsPeriod.date,
     month: statsPeriod.month,
